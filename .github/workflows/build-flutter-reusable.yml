@@ -53,6 +53,7 @@ jobs:
 
       - name: Install NDK and Build Tools
         run: |
+          # Platform SDK di-install secara dinamis setelah pub get
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "ndk;27.0.12077973" \
             "ndk;28.2.13676358" \
@@ -152,57 +153,101 @@ jobs:
           echo "flutter pub get gagal dan tidak ada saran versi Flutter yang bisa dicoba."
           exit 1
 
+      # ─────────────────────────────────────────────────────────────────────
+      # Auto-detect SDK dari pub-cache + Gradle sync ringan, install + patch
+      # ─────────────────────────────────────────────────────────────────────
       - name: Auto-Detect & Install Required Android SDK Platform
         working-directory: ${{ env.PROJECT_ROOT }}
         run: |
+          # --- 1. Baca compileSdk dari project build.gradle ---
           PROJECT_COMPILE_SDK=0
           GRADLE_FILE=""
           for f in "android/app/build.gradle.kts" "android/app/build.gradle"; do
             if [ -f "$f" ]; then
-              SDK=$(grep -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" "$f" 2>/dev/null \
-                    | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1)
-              if [ -n "$SDK" ]; then
+              SDK=$(grep -E "compileSdk" "$f" 2>/dev/null | grep -oE '[0-9]{2,}' | sort -n | tail -1 || echo "0")
+              if [ -n "$SDK" ] && [ "$SDK" -gt 0 ]; then
                 PROJECT_COMPILE_SDK=$SDK
                 GRADLE_FILE="$f"
               fi
               break
             fi
           done
-          echo "Project compileSdk saat ini: $PROJECT_COMPILE_SDK (dari ${GRADLE_FILE:-tidak ditemukan})"
+          echo "Project compileSdk: $PROJECT_COMPILE_SDK (file: ${GRADLE_FILE:-tidak ditemukan})"
 
-          PLUGIN_COMPILE_SDK=$(find ~/.pub-cache -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) \
-            -path "*/android/*" 2>/dev/null \
-            | xargs grep -h -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" 2>/dev/null \
-            | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1 || echo "0")
-          echo "Plugin tertinggi compileSdk yang ditemukan: $PLUGIN_COMPILE_SDK"
+          # --- 2. Scan pub-cache untuk cari compileSdk tertinggi dari plugins ---
+          # Cari semua build.gradle di pub-cache dengan berbagai format
+          PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+          echo "Scanning pub-cache di: $PUB_CACHE_DIR"
 
+          PLUGIN_COMPILE_SDK=$(find "$PUB_CACHE_DIR" -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+            2>/dev/null \
+            | xargs grep -h "compileSdk" 2>/dev/null \
+            | grep -oE '[0-9]{2,}' \
+            | sort -n | tail -1 || echo "0")
+
+          echo "Highest compileSdk dari plugins: $PLUGIN_COMPILE_SDK"
+
+          # --- 3. Tentukan SDK tertinggi yang dibutuhkan ---
           REQUIRED_SDK=$PROJECT_COMPILE_SDK
           if [ -n "$PLUGIN_COMPILE_SDK" ] && [ "$PLUGIN_COMPILE_SDK" -gt "$REQUIRED_SDK" ]; then
             REQUIRED_SDK=$PLUGIN_COMPILE_SDK
           fi
 
+          # Minimum sanity check
           if [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 33 ]; then
             REQUIRED_SDK=35
           fi
 
-          echo "Required Android SDK Platform yang akan diinstall: android-$REQUIRED_SDK"
+          echo "Final required SDK: $REQUIRED_SDK"
           echo "DETECTED_COMPILE_SDK=$REQUIRED_SDK" >> $GITHUB_ENV
 
+          # --- 4. Patch build.gradle kalau project SDK kurang dari required ---
           if [ -n "$GRADLE_FILE" ] && [ "$REQUIRED_SDK" -gt "$PROJECT_COMPILE_SDK" ]; then
-            echo "Auto-patching $GRADLE_FILE: compileSdk $PROJECT_COMPILE_SDK → $REQUIRED_SDK"
-            sed -i "s/compileSdk\s*=\s*$PROJECT_COMPILE_SDK/compileSdk = $REQUIRED_SDK/" "$GRADLE_FILE"
-            sed -i "s/targetSdk\s*=\s*$PROJECT_COMPILE_SDK/targetSdk = $REQUIRED_SDK/" "$GRADLE_FILE" || true
-            echo "Hasil patch $GRADLE_FILE:"
+            echo "Patching $GRADLE_FILE: compileSdk $PROJECT_COMPILE_SDK -> $REQUIRED_SDK"
+            # Pakai python untuk patch yang reliable, hindari masalah sed regex
+            python3 - "$GRADLE_FILE" "$PROJECT_COMPILE_SDK" "$REQUIRED_SDK" <<'PYEOF'
+          import sys, re
+
+          gradle_file = sys.argv[1]
+          old_sdk = sys.argv[2]
+          new_sdk = sys.argv[3]
+
+          with open(gradle_file, 'r') as f:
+              content = f.read()
+
+          # Ganti compileSdk dan targetSdk (semua format: dengan/tanpa =, dengan/tanpa Version)
+          patched = re.sub(
+              r'(compileSdk(?:Version)?\s*(?:=\s*)?)'  + re.escape(old_sdk),
+              lambda m: m.group(1) + new_sdk,
+              content
+          )
+          patched = re.sub(
+              r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old_sdk),
+              lambda m: m.group(1) + new_sdk,
+              patched
+          )
+
+          if patched != content:
+              with open(gradle_file, 'w') as f:
+                  f.write(patched)
+              print(f"Patched: compileSdk/targetSdk {old_sdk} -> {new_sdk}")
+          else:
+              print(f"Tidak ada perubahan — pattern tidak ditemukan di {gradle_file}")
+          PYEOF
+
+            echo "=== Isi build.gradle setelah patch ==="
             grep -E "compileSdk|targetSdk" "$GRADLE_FILE"
           else
-            echo "Tidak perlu patch — project compileSdk sudah memenuhi requirement."
+            echo "Tidak perlu patch compileSdk."
           fi
 
+          # --- 5. Install required platform SDK ---
           echo "Installing platforms;android-$REQUIRED_SDK ..."
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-$REQUIRED_SDK" \
             --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
 
+          # Install android-35 sebagai base fallback
           if [ "$REQUIRED_SDK" != "35" ]; then
             echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
               "platforms;android-35" \
@@ -227,18 +272,16 @@ jobs:
           flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
           BUILD_EXIT=${PIPESTATUS[0]}
 
+          # Recovery 1: minSdk terlalu rendah
           if [ $BUILD_EXIT -ne 0 ]; then
-            REQUIRED_SDK=$(grep -oE "cannot be smaller than version [0-9]+" "$BUILD_LOG_FILE" | grep -oE "[0-9]+" | head -1)
-
-            if [ -n "$REQUIRED_SDK" ]; then
-              echo ""
-              echo "Terdeteksi butuh minSdk minimal $REQUIRED_SDK, auto-patch build.gradle dan build ulang..."
-              python3 - "$REQUIRED_SDK" <<'PYEOF'
+            REQUIRED_MIN=$(grep -oE "cannot be smaller than version [0-9]+" "$BUILD_LOG_FILE" | grep -oE "[0-9]+" | head -1)
+            if [ -n "$REQUIRED_MIN" ]; then
+              echo "Auto-patch minSdk -> $REQUIRED_MIN, build ulang..."
+              python3 - "$REQUIRED_MIN" <<'PYEOF'
           import re, os, sys
 
           required = sys.argv[1]
           candidates = ["android/app/build.gradle.kts", "android/app/build.gradle"]
-
           for path in candidates:
               if os.path.exists(path):
                   with open(path) as f:
@@ -252,11 +295,64 @@ jobs:
                       with open(path, 'w') as f:
                           f.write(new_content)
                       print(f"Patched {path}: minSdk -> {required}")
-                  else:
-                      print(f"Tidak menemukan baris minSdk di {path} untuk di-patch")
                   break
-          else:
-              print("Tidak menemukan file build.gradle/build.gradle.kts")
+          PYEOF
+              flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
+              BUILD_EXIT=${PIPESTATUS[0]}
+            fi
+          fi
+
+          # Recovery 2: Missing platform SDK atau compileSdk terlalu rendah (safety net)
+          if [ $BUILD_EXIT -ne 0 ]; then
+            # Cek "Failed to find Platform SDK" → install missing SDK
+            MISSING_PLATFORM=$(grep -oE "platforms;android-[0-9]+" "$BUILD_LOG_FILE" | grep -oE "[0-9]+" | sort -n | tail -1)
+            # Cek juga "requires to be compiled against a higher Android SDK version"
+            REQUIRED_COMPILE=$(grep -oE "compiles against Android SDK [0-9]+" "$BUILD_LOG_FILE" | grep -oE "[0-9]+" | sort -n | tail -1)
+
+            TARGET_SDK=""
+            if [ -n "$REQUIRED_COMPILE" ]; then
+              TARGET_SDK=$REQUIRED_COMPILE
+            elif [ -n "$MISSING_PLATFORM" ]; then
+              TARGET_SDK=$MISSING_PLATFORM
+            fi
+
+            if [ -n "$TARGET_SDK" ]; then
+              echo "Recovery: install platforms;android-$TARGET_SDK dan patch compileSdk..."
+
+              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+                "platforms;android-$TARGET_SDK" \
+                --sdk_root=$ANDROID_HOME 2>&1 | tail -5
+
+              python3 - "$TARGET_SDK" <<'PYEOF'
+          import re, os, sys
+
+          new_sdk = sys.argv[1]
+          candidates = ["android/app/build.gradle.kts", "android/app/build.gradle"]
+          for path in candidates:
+              if os.path.exists(path):
+                  with open(path) as f:
+                      content = f.read()
+                  # Ambil nilai compileSdk yang ada
+                  m = re.search(r'compileSdk(?:Version)?\s*(?:=\s*)?(\d+)', content)
+                  if m:
+                      old_sdk = m.group(1)
+                      if int(new_sdk) > int(old_sdk):
+                          patched = re.sub(
+                              r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old_sdk),
+                              lambda x: x.group(1) + new_sdk,
+                              content
+                          )
+                          patched = re.sub(
+                              r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old_sdk),
+                              lambda x: x.group(1) + new_sdk,
+                              patched
+                          )
+                          with open(path, 'w') as f:
+                              f.write(patched)
+                          print(f"Patched {path}: compileSdk/targetSdk {old_sdk} -> {new_sdk}")
+                      else:
+                          print(f"compileSdk {old_sdk} sudah >= {new_sdk}, skip patch")
+                  break
           PYEOF
 
               flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
@@ -264,66 +360,34 @@ jobs:
             fi
           fi
 
+          # Recovery 3: Incompatibility versi package
           if [ $BUILD_EXIT -ne 0 ]; then
-            MISSING_PLATFORM=$(grep -oE "Failed to find Platform SDK with path: platforms;android-[0-9]+" "$BUILD_LOG_FILE" \
-              | grep -oE "android-[0-9]+" | grep -oE "[0-9]+" | head -1)
-
-            if [ -n "$MISSING_PLATFORM" ]; then
-              echo ""
-              echo "Terdeteksi missing platforms;android-$MISSING_PLATFORM, install dan build ulang..."
-              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-                "platforms;android-$MISSING_PLATFORM" \
-                --sdk_root=$ANDROID_HOME 2>&1 | tail -5
-
-              for gradle_f in "android/app/build.gradle.kts" "android/app/build.gradle"; do
-                if [ -f "$gradle_f" ]; then
-                  CUR_SDK=$(grep -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" "$gradle_f" 2>/dev/null \
-                            | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1 || echo "0")
-                  if [ -n "$CUR_SDK" ] && [ "$MISSING_PLATFORM" -gt "$CUR_SDK" ]; then
-                    echo "Patching $gradle_f: compileSdk $CUR_SDK → $MISSING_PLATFORM"
-                    sed -i "s/compileSdk\s*=\s*$CUR_SDK/compileSdk = $MISSING_PLATFORM/" "$gradle_f"
-                    sed -i "s/targetSdk\s*=\s*$CUR_SDK/targetSdk = $MISSING_PLATFORM/" "$gradle_f" || true
-                  fi
-                  break
-                fi
-              done
-
-              flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT_ERROR=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
-
-            if [ "$INCOMPAT_ERROR" -gt 0 ]; then
-              echo ""
-              echo "Terdeteksi kemungkinan incompatibility versi package dengan Flutter SDK, mencoba flutter pub upgrade dan build ulang..."
+            INCOMPAT=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
+            if [ "$INCOMPAT" -gt 0 ]; then
+              echo "Incompatibility terdeteksi, flutter pub upgrade..."
               flutter pub upgrade
               flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
               BUILD_EXIT=${PIPESTATUS[0]}
             fi
           fi
 
+          # Recovery 4: Masih incompatible → coba major-versions
           if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT_ERROR_2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
-
-            if [ "$INCOMPAT_ERROR_2" -gt 0 ]; then
-              echo ""
-              echo "Masih incompatible setelah pub upgrade biasa. Mencoba flutter pub upgrade --major-versions (bisa lompat versi major)..."
+            INCOMPAT2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
+            if [ "$INCOMPAT2" -gt 0 ]; then
+              echo "Masih incompatible, flutter pub upgrade --major-versions..."
               flutter pub upgrade --major-versions
               flutter build apk --release --no-tree-shake-icons
               BUILD_EXIT=$?
             fi
           fi
 
+          # Recovery 5: Plugin butuh SDK tidak tersedia, coba downgrade plugin
           if [ $BUILD_EXIT -ne 0 ]; then
-            OFFENDING_PLUGIN=$(grep -oE "The plugin [a-zA-Z0-9_]+ requires Android SDK version [0-9]+" "$BUILD_LOG_FILE" | grep -oE "^The plugin [a-zA-Z0-9_]+" | grep -oE "[a-zA-Z0-9_]+$" | head -1)
-
-            if [ -n "$OFFENDING_PLUGIN" ]; then
-              echo ""
-              echo "Plugin $OFFENDING_PLUGIN butuh Android SDK yang belum stable/tersedia. Coba downgrade plugin ini dan build ulang..."
-              flutter pub downgrade "$OFFENDING_PLUGIN"
+            OFFENDING=$(grep -oE "The plugin [a-zA-Z0-9_]+ requires Android SDK version [0-9]+" "$BUILD_LOG_FILE" | grep -oE "^The plugin [a-zA-Z0-9_]+" | grep -oE "[a-zA-Z0-9_]+$" | head -1)
+            if [ -n "$OFFENDING" ]; then
+              echo "Downgrade plugin $OFFENDING dan build ulang..."
+              flutter pub downgrade "$OFFENDING"
               flutter build apk --release --no-tree-shake-icons
               BUILD_EXIT=$?
             fi
