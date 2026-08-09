@@ -206,7 +206,9 @@ jobs:
             fi
           done
 
-          if [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 36 ]; then
+          if [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 35 ]; then
+            REQUIRED_SDK=35
+          elif [ "$REQUIRED_SDK" -gt 36 ]; then
             REQUIRED_SDK=36
           fi
 
