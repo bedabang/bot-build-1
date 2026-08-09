@@ -28,14 +28,14 @@ jobs:
           curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" -o project.zip "$URL"
           mkdir -p project
           unzip -qq project.zip -d project
-          
+
           PUBSPEC=$(find project -type f -iname "pubspec.yaml" | head -1)
-          
+
           if [ -z "$PUBSPEC" ]; then
             echo "pubspec.yaml tidak ditemukan di folder manapun di dalam ZIP"
             exit 1
           fi
-          
+
           PROJECT_ROOT=$(dirname "$PUBSPEC")
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
           echo "Berhasil mendeteksi lokasi proyek di: $PROJECT_ROOT"
@@ -43,7 +43,7 @@ jobs:
       - name: Clean Stale Build Cache
         run: |
           TARGET_DIR="${{ env.PROJECT_ROOT }}"
-          
+
           if [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
             rm -rf build .dart_tool android/.gradle android/build android/app/build ios/Pods ios/.symlinks
@@ -70,8 +70,7 @@ jobs:
             "ndk;28.2.13676358" \
             "build-tools;35.0.0" \
             "platforms;android-35" \
-            "platforms;android-36" \
-            "platforms;android-37" 2>&1 | tail -5 || true
+            "platforms;android-36" 2>&1 | tail -5 || true
 
       - name: Detect Required Flutter Version
         run: |
@@ -148,7 +147,7 @@ jobs:
           fi
 
       - name: Setup Flutter (ganti ke versi saran pub)
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION!= ''
+        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION != ''
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.SUGGESTED_FLUTTER_VERSION }}
@@ -156,7 +155,7 @@ jobs:
           cache: true
 
       - name: Flutter Pub Get (attempt 2, setelah ganti versi)
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION!= ''
+        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION != ''
         working-directory: ${{ env.PROJECT_ROOT }}
         run: flutter pub get
 
@@ -239,7 +238,7 @@ jobs:
               patched
           )
 
-          if patched!= content:
+          if patched != content:
               with open(gradle_file, 'w') as f:
                   f.write(patched)
               print(f"Patched: compileSdk/targetSdk {old_sdk} -> {new_sdk}")
@@ -252,14 +251,6 @@ jobs:
           else
             echo "Tidak perlu patch compileSdk."
           fi
-
-          echo "Upgrading cmdline-tools to read SDK 37 XML v4..."
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "cmdline-tools;latest"
-
-          echo "Installing platforms;android-$REQUIRED_SDK..."
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "platforms;android-$REQUIRED_SDK" \
-            --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
 
       - name: Tune JVM Memory untuk Gradle
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -291,6 +282,10 @@ jobs:
                 TARGET_SDK=$candidate
               fi
             done
+            if [ "$TARGET_SDK" -gt 36 ] 2>/dev/null; then
+              echo "SDK $TARGET_SDK belum tersedia stabil (masih preview), batalin patch — coba downgrade plugin sebagai gantinya."
+              return 1
+            fi
             if [ "$TARGET_SDK" -gt 0 ] 2>/dev/null; then
               echo "SDK dibutuhkan: $TARGET_SDK — install + patch..."
               echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "cmdline-tools;latest"
@@ -348,11 +343,11 @@ jobs:
                   with open(path) as f:
                       content = f.read()
                   new_content = re.sub(
-                      r'(minSdk(?:Version)?\s*=?\s*)(flutter.minSdkVersion|\d+)',
+                      r'(minSdk(?:Version)?\s*=?\s*)(flutter\.minSdkVersion|\d+)',
                       lambda m: m.group(1) + required,
                       content
                   )
-                  if new_content!= content:
+                  if new_content != content:
                       with open(path, 'w') as f:
                           f.write(new_content)
                       print(f"Patched {path}: minSdk -> {required}")
@@ -369,7 +364,7 @@ jobs:
             fi
           fi
           if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument).* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
+            INCOMPAT=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
             if [ "$INCOMPAT" -gt 0 ]; then
               echo "Incompatibility terdeteksi, flutter pub upgrade..."
               flutter pub upgrade
@@ -379,7 +374,7 @@ jobs:
             fi
           fi
           if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument).* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
+            INCOMPAT2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" "$BUILD_LOG_FILE" || true)
             if [ "$INCOMPAT2" -gt 0 ]; then
               echo "Masih incompatible, flutter pub upgrade --major-versions..."
               flutter pub upgrade --major-versions
