@@ -208,8 +208,8 @@ jobs:
 
           if [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 35 ]; then
             REQUIRED_SDK=35
-          elif [ "$REQUIRED_SDK" -gt 36 ]; then
-            REQUIRED_SDK=36
+          elif [ "$REQUIRED_SDK" -gt 35 ]; then
+            REQUIRED_SDK=35
           fi
 
           echo "Final required SDK: $REQUIRED_SDK"
@@ -253,7 +253,7 @@ jobs:
             echo "Tidak perlu patch compileSdk."
           fi
 
-          echo "Upgrading cmdline-tools to read SDK 37 XML v4..."
+          echo "Upgrading cmdline-tools to read SDK 35 XML..."
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "cmdline-tools;latest"
 
           echo "Installing platforms;android-$REQUIRED_SDK..."
