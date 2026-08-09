@@ -53,7 +53,7 @@ jobs:
 
       - name: Install NDK and SDK Platform
         run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "ndk;28.2.13676358" "platforms;android-36" "platforms;android-37" "build-tools;35.0.0" --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "ndk;28.2.13676358" "platforms;android-36" "build-tools;35.0.0" --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
 
       - name: Detect Required Flutter Version
         run: |
@@ -228,12 +228,12 @@ jobs:
           fi
 
           if [ $BUILD_EXIT -ne 0 ]; then
-            MISSING_PLATFORM=$(grep -oE "Failed to find Platform SDK with path: platforms;android-[0-9]+" "$BUILD_LOG_FILE" | grep -oE "[0-9]+" | head -1)
+            OFFENDING_PLUGIN=$(grep -oE "The plugin [a-zA-Z0-9_]+ requires Android SDK version [0-9]+" "$BUILD_LOG_FILE" | grep -oE "^The plugin [a-zA-Z0-9_]+" | grep -oE "[a-zA-Z0-9_]+$" | head -1)
 
-            if [ -n "$MISSING_PLATFORM" ]; then
+            if [ -n "$OFFENDING_PLUGIN" ]; then
               echo ""
-              echo "Terdeteksi butuh Android SDK Platform $MISSING_PLATFORM, install dan build ulang..."
-              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-$MISSING_PLATFORM" --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
+              echo "Plugin $OFFENDING_PLUGIN butuh Android SDK yang belum stable/tersedia. Coba downgrade plugin ini dan build ulang..."
+              flutter pub downgrade "$OFFENDING_PLUGIN"
               flutter build apk --release --no-tree-shake-icons
               BUILD_EXIT=$?
             fi
