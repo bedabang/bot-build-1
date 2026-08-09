@@ -255,8 +255,8 @@ jobs:
         run: |
           mkdir -p android
           touch android/gradle.properties
-          grep -q "org.gradle.jvmargs" android/gradle.properties || \
-            echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
+          sed -i '/org.gradle.jvmargs/d' android/gradle.properties
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=2g -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
           grep -q "org.gradle.daemon" android/gradle.properties || \
             echo "org.gradle.daemon=true" >> android/gradle.properties
 
@@ -388,6 +388,20 @@ jobs:
           if [ $BUILD_EXIT -ne 0 ]; then
             echo "Final SDK check setelah semua upgrade..."
             if fix_sdk "$BUILD_LOG"; then
+              flutter build apk --release --no-tree-shake-icons \
+                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+              BUILD_EXIT=${PIPESTATUS[0]}
+            fi
+          fi
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            if grep -q "OutOfMemoryError" "$BUILD_LOG" 2>/dev/null; then
+              echo "OOM Metaspace terdeteksi — disable parallel build dan retry..."
+              echo "org.gradle.parallel=false" >> android/gradle.properties
+              echo "org.gradle.workers.max=2" >> android/gradle.properties
+              echo "org.gradle.configureondemand=false" >> android/gradle.properties
+              sed -i '/org.gradle.jvmargs/d' android/gradle.properties
+              echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=3g -XX:+UseG1GC" >> android/gradle.properties
               flutter build apk --release --no-tree-shake-icons \
                 --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
               BUILD_EXIT=${PIPESTATUS[0]}
