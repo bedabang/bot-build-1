@@ -28,19 +28,30 @@ jobs:
           curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" -o project.zip "$URL"
           mkdir -p project
           unzip -qq project.zip -d project
-          PUBSPEC=$(find project -maxdepth 8 -iname "pubspec.yaml" | head -1)
+          
+          PUBSPEC=$(find project -type f -iname "pubspec.yaml" | head -1)
+          
           if [ -z "$PUBSPEC" ]; then
-            echo "pubspec.yaml tidak ditemukan di dalam ZIP"
+            echo "pubspec.yaml tidak ditemukan di folder manapun di dalam ZIP"
             exit 1
           fi
+          
           PROJECT_ROOT=$(dirname "$PUBSPEC")
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
+          echo "Berhasil mendeteksi lokasi proyek di: $PROJECT_ROOT"
 
       - name: Clean Stale Build Cache
         run: |
-          cd "${{ env.PROJECT_ROOT }}"
-          rm -rf build.dart_tool android/.gradle android/build android/app/build ios/Pods ios/.symlinks
-          find. -iname "local.properties" -delete
+          TARGET_DIR="${{ env.PROJECT_ROOT }}"
+          
+          if [ -d "$TARGET_DIR" ]; then
+            cd "$TARGET_DIR"
+            rm -rf build .dart_tool android/.gradle android/build android/app/build ios/Pods ios/.symlinks
+            find . -iname "local.properties" -delete
+          else
+            echo "Error: Direktori $TARGET_DIR tidak ditemukan."
+            exit 1
+          fi
 
       - name: Fix Android SDK Path
         run: echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
