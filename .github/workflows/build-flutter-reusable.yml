@@ -51,9 +51,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install NDK and SDK Platform
+      - name: Install NDK and Build Tools
         run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "ndk;28.2.13676358" "platforms;android-36" "build-tools;35.0.0" --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.0.12077973" \
+            "ndk;28.2.13676358" \
+            "build-tools;35.0.0" \
+            --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
 
       - name: Detect Required Flutter Version
         run: |
@@ -148,6 +152,63 @@ jobs:
           echo "flutter pub get gagal dan tidak ada saran versi Flutter yang bisa dicoba."
           exit 1
 
+      - name: Auto-Detect & Install Required Android SDK Platform
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          PROJECT_COMPILE_SDK=0
+          GRADLE_FILE=""
+          for f in "android/app/build.gradle.kts" "android/app/build.gradle"; do
+            if [ -f "$f" ]; then
+              SDK=$(grep -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" "$f" 2>/dev/null \
+                    | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1)
+              if [ -n "$SDK" ]; then
+                PROJECT_COMPILE_SDK=$SDK
+                GRADLE_FILE="$f"
+              fi
+              break
+            fi
+          done
+          echo "Project compileSdk saat ini: $PROJECT_COMPILE_SDK (dari ${GRADLE_FILE:-tidak ditemukan})"
+
+          PLUGIN_COMPILE_SDK=$(find ~/.pub-cache -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+            -path "*/android/*" 2>/dev/null \
+            | xargs grep -h -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" 2>/dev/null \
+            | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1 || echo "0")
+          echo "Plugin tertinggi compileSdk yang ditemukan: $PLUGIN_COMPILE_SDK"
+
+          REQUIRED_SDK=$PROJECT_COMPILE_SDK
+          if [ -n "$PLUGIN_COMPILE_SDK" ] && [ "$PLUGIN_COMPILE_SDK" -gt "$REQUIRED_SDK" ]; then
+            REQUIRED_SDK=$PLUGIN_COMPILE_SDK
+          fi
+
+          if [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 33 ]; then
+            REQUIRED_SDK=35
+          fi
+
+          echo "Required Android SDK Platform yang akan diinstall: android-$REQUIRED_SDK"
+          echo "DETECTED_COMPILE_SDK=$REQUIRED_SDK" >> $GITHUB_ENV
+
+          if [ -n "$GRADLE_FILE" ] && [ "$REQUIRED_SDK" -gt "$PROJECT_COMPILE_SDK" ]; then
+            echo "Auto-patching $GRADLE_FILE: compileSdk $PROJECT_COMPILE_SDK → $REQUIRED_SDK"
+            sed -i "s/compileSdk\s*=\s*$PROJECT_COMPILE_SDK/compileSdk = $REQUIRED_SDK/" "$GRADLE_FILE"
+            sed -i "s/targetSdk\s*=\s*$PROJECT_COMPILE_SDK/targetSdk = $REQUIRED_SDK/" "$GRADLE_FILE" || true
+            echo "Hasil patch $GRADLE_FILE:"
+            grep -E "compileSdk|targetSdk" "$GRADLE_FILE"
+          else
+            echo "Tidak perlu patch — project compileSdk sudah memenuhi requirement."
+          fi
+
+          echo "Installing platforms;android-$REQUIRED_SDK ..."
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-$REQUIRED_SDK" \
+            --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
+
+          if [ "$REQUIRED_SDK" != "35" ]; then
+            echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+              "platforms;android-35" \
+              --sdk_root=$ANDROID_HOME 2>&1 | tail -3 || true
+          fi
+
       - name: Tune JVM Memory untuk Gradle
         working-directory: ${{ env.PROJECT_ROOT }}
         run: |
@@ -198,8 +259,37 @@ jobs:
               print("Tidak menemukan file build.gradle/build.gradle.kts")
           PYEOF
 
-              flutter build apk --release --no-tree-shake-icons
-              BUILD_EXIT=$?
+              flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
+              BUILD_EXIT=${PIPESTATUS[0]}
+            fi
+          fi
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            MISSING_PLATFORM=$(grep -oE "Failed to find Platform SDK with path: platforms;android-[0-9]+" "$BUILD_LOG_FILE" \
+              | grep -oE "android-[0-9]+" | grep -oE "[0-9]+" | head -1)
+
+            if [ -n "$MISSING_PLATFORM" ]; then
+              echo ""
+              echo "Terdeteksi missing platforms;android-$MISSING_PLATFORM, install dan build ulang..."
+              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+                "platforms;android-$MISSING_PLATFORM" \
+                --sdk_root=$ANDROID_HOME 2>&1 | tail -5
+
+              for gradle_f in "android/app/build.gradle.kts" "android/app/build.gradle"; do
+                if [ -f "$gradle_f" ]; then
+                  CUR_SDK=$(grep -E "compileSdk(Version)?\s*[=\s]\s*[0-9]+" "$gradle_f" 2>/dev/null \
+                            | grep -oE '\b[0-9]{2}\b' | sort -n | tail -1 || echo "0")
+                  if [ -n "$CUR_SDK" ] && [ "$MISSING_PLATFORM" -gt "$CUR_SDK" ]; then
+                    echo "Patching $gradle_f: compileSdk $CUR_SDK → $MISSING_PLATFORM"
+                    sed -i "s/compileSdk\s*=\s*$CUR_SDK/compileSdk = $MISSING_PLATFORM/" "$gradle_f"
+                    sed -i "s/targetSdk\s*=\s*$CUR_SDK/targetSdk = $MISSING_PLATFORM/" "$gradle_f" || true
+                  fi
+                  break
+                fi
+              done
+
+              flutter build apk --release --no-tree-shake-icons 2>&1 | tee "$BUILD_LOG_FILE"
+              BUILD_EXIT=${PIPESTATUS[0]}
             fi
           fi
 
