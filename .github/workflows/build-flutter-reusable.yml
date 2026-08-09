@@ -270,7 +270,7 @@ jobs:
           grep -q "org.gradle.daemon" android/gradle.properties || echo "org.gradle.daemon=true" >> android/gradle.properties
           cat android/gradle.properties
 
-            - name: Build APK Release (Otomatis Menyesuaikan dengan Zip)
+      - name: Build APK Release (Otomatis Menyesuaikan dengan Zip)
         working-directory: ${{ env.PROJECT_ROOT }}
         timeout-minutes: 25
         run: |
