@@ -44,14 +44,20 @@ jobs:
             || unzip project.zip -d project \
             || true
 
+          chmod -R 755 project
+
           PUBSPEC=$(find project -type f -iname "pubspec.yaml" | head -1)
           if [ -z "$PUBSPEC" ]; then
             echo "pubspec.yaml tidak ditemukan di dalam ZIP"
+            ls -la project/
             exit 1
           fi
+          
           PROJECT_ROOT=$(dirname "$PUBSPEC")
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_ROOT"
+          echo "Struktur:"
+          ls -la "$PROJECT_ROOT/" | head -15
 
       - name: Clean Stale Build Cache
         run: |
