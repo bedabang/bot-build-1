@@ -102,15 +102,18 @@ jobs:
 
       - name: Detect Min SDK Requirement
         id: detect_sdk
+        env:
+          PUBSPEC_PATH: ${{ env.PROJECT_ROOT }}/pubspec.yaml
         run: |
-          PUBSPEC="${{ env.PROJECT_ROOT }}/pubspec.yaml"
-          
           MIN_SDK=$(python3 << 'PYEOF'
           import re
           import sys
+          import os
 
+          pubspec_path = os.environ.get('PUBSPEC_PATH')
+          
           try:
-              with open(sys.argv[1]) as f:
+              with open(pubspec_path) as f:
                   content = f.read()
               
               in_env = False
@@ -130,7 +133,6 @@ jobs:
           except Exception as e:
               print("3.8")
           PYEOF
-          "$PUBSPEC"
           )
           
           echo "min_sdk=$MIN_SDK" >> $GITHUB_OUTPUT
@@ -141,7 +143,7 @@ jobs:
         env:
           MIN_SDK: ${{ steps.detect_sdk.outputs.min_sdk }}
         run: |
-          python3 << 'PYEOF'
+          CANDIDATES=$(python3 << 'PYEOF'
           import os
 
           min_sdk = os.environ.get('MIN_SDK', '3.8')
@@ -154,15 +156,13 @@ jobs:
           }
 
           candidates = compat_map.get(min_sdk, pool)
-          candidates_str = " ".join(candidates)
-          
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"candidates={candidates_str}\n")
-          
-          print(f"Selected Flutter versions: {candidates_str}")
+          print(" ".join(candidates))
           PYEOF
+          )
 
-          echo "FLUTTER_CANDIDATES=${{ steps.select_versions.outputs.candidates }}" >> $GITHUB_ENV
+          echo "candidates=$CANDIDATES" >> $GITHUB_OUTPUT
+          echo "FLUTTER_CANDIDATES=$CANDIDATES" >> $GITHUB_ENV
+          echo "Selected Flutter versions: $CANDIDATES"
 
       - name: Auto-Detect & Patch compileSdk
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -228,6 +228,19 @@ jobs:
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=2g -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
           grep -q "org.gradle.daemon" android/gradle.properties || \
             echo "org.gradle.daemon=true" >> android/gradle.properties
+
+      - name: Setup Initial Flutter and FVM
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.0
+          channel: stable
+          cache: true
+
+      - name: Install FVM for Version Switching
+        run: |
+          pub global activate fvm
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          fvm releases
 
       - name: Build with Flutter Version Pool Retry
         id: build_retry
@@ -431,8 +444,14 @@ jobs:
             echo "Attempt $ATTEMPT/$TOTAL - Flutter $FLUTTER_VER"
             echo "════════════════════════════════════════════"
 
+            cd "$PROJECT_ROOT"
+
+            export PATH="$PATH:$HOME/.pub-cache/bin"
+            fvm install $FLUTTER_VER 2>&1 | tail -5
+            fvm use $FLUTTER_VER 2>&1 | tail -3
+            flutter --version
+
             if [ "$ATTEMPT" -gt 1 ]; then
-              cd "$PROJECT_ROOT"
               rm -rf build .dart_tool android/build android/app/build
               flutter clean 2>/dev/null || true
             fi
