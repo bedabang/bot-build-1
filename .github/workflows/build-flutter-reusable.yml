@@ -18,7 +18,6 @@ env:
     3.32.0
     3.32.5
     3.35.0
-    3.40.0
 
 jobs:
   build:
@@ -52,8 +51,8 @@ jobs:
             ls -la project/
             exit 1
           fi
-          
-          PROJECT_ROOT=$(dirname "$PUBSPEC")
+
+          PROJECT_ROOT=$(cd "$(dirname "$PUBSPEC")" && pwd)
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_ROOT"
           echo "Struktur:"
@@ -111,11 +110,11 @@ jobs:
           import os
 
           pubspec_path = os.environ.get('PUBSPEC_PATH')
-          
+
           try:
               with open(pubspec_path) as f:
                   content = f.read()
-              
+
               in_env = False
               for line in content.split('\n'):
                   if re.match(r'^environment\s*:', line):
@@ -128,13 +127,13 @@ jobs:
                       if m:
                           print(m.group(1))
                           sys.exit(0)
-              
+
               print("3.8")
           except Exception as e:
               print("3.8")
           PYEOF
           )
-          
+
           echo "min_sdk=$MIN_SDK" >> $GITHUB_OUTPUT
           echo "Detected min SDK: $MIN_SDK"
 
@@ -147,12 +146,12 @@ jobs:
           import os
 
           min_sdk = os.environ.get('MIN_SDK', '3.8')
-          pool = ["3.32.0", "3.32.5", "3.35.0", "3.40.0"]
+          pool = ["3.32.0", "3.32.5", "3.35.0"]
 
           compat_map = {
-              "3.8": ["3.32.0", "3.32.5", "3.35.0", "3.40.0"],
-              "3.9": ["3.32.5", "3.35.0", "3.40.0"],
-              "3.10": ["3.35.0", "3.40.0"],
+              "3.8": ["3.32.0", "3.32.5", "3.35.0"],
+              "3.9": ["3.32.5", "3.35.0"],
+              "3.10": ["3.35.0"],
           }
 
           candidates = compat_map.get(min_sdk, pool)
@@ -213,7 +212,7 @@ jobs:
           PYEOF
               grep -E "compileSdk|targetSdk" "$GRADLE_FILE"
             else
-              echo "SDK $REQUIRED_SDK tidak tersedia — skip patch. Recovery build yang akan handle."
+              echo "SDK $REQUIRED_SDK tidak tersedia, skip patch. Recovery build yang akan handle."
             fi
           else
             echo "Tidak perlu patch compileSdk."
@@ -253,6 +252,8 @@ jobs:
           ATTEMPT=0
           SUCCESS=false
           FLUTTER_VERSION_USED=""
+
+          export PATH="$PATH:$HOME/.pub-cache/bin"
 
           patch_compile_sdk() {
             local NEW_SDK="$1"
@@ -314,7 +315,7 @@ jobs:
               return 0
             fi
 
-            echo "SDK $TARGET tidak tersedia via sdkmanager — downgrade packages via dependency_overrides..."
+            echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages via dependency_overrides..."
             MAX_AVAIL=$(ls "$ANDROID_HOME/platforms/" 2>/dev/null \
               | grep -oE 'android-[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
@@ -431,7 +432,7 @@ jobs:
           print(f"pubspec.yaml diupdate dengan {len(overrides)} dependency_overrides")
           DOWNGRADE_PYEOF
 
-            flutter pub get || true
+            fvm flutter pub get || true
             return 0
           }
 
@@ -446,27 +447,26 @@ jobs:
 
             cd "$PROJECT_ROOT"
 
-            export PATH="$PATH:$HOME/.pub-cache/bin"
             fvm install $FLUTTER_VER 2>&1 | tail -5
-            fvm use $FLUTTER_VER 2>&1 | tail -3
-            flutter --version
+            fvm use $FLUTTER_VER --force 2>&1 | tail -3
+            fvm flutter --version
 
             if [ "$ATTEMPT" -gt 1 ]; then
               rm -rf build .dart_tool android/build android/app/build
-              flutter clean 2>/dev/null || true
+              fvm flutter clean 2>/dev/null || true
             fi
 
             PUB_LOG=$(mktemp)
             echo "Running flutter pub get..."
-            if ! flutter pub get 2>&1 | tee "$PUB_LOG"; then
-              echo "⚠️  flutter pub get gagal untuk $FLUTTER_VER, coba versi berikutnya..."
+            if ! fvm flutter pub get 2>&1 | tee "$PUB_LOG"; then
+              echo "flutter pub get gagal untuk $FLUTTER_VER, coba versi berikutnya..."
               continue
             fi
 
             BUILD_LOG=$(mktemp)
             echo "Building APK Release..."
 
-            flutter build apk --release --no-tree-shake-icons \
+            fvm flutter build apk --release --no-tree-shake-icons \
               --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
             BUILD_EXIT=${PIPESTATUS[0]}
 
@@ -496,10 +496,10 @@ jobs:
                   print(f"Patched: minSdk -> {req}")
               break
           PYEOF
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah minSdk patch"
                   SUCCESS=true
@@ -515,10 +515,10 @@ jobs:
               if [ "${HAS_SDK_ERR:-0}" -gt 0 ]; then
                 echo "Detected SDK error, attempting auto-fix..."
                 fix_sdk "$BUILD_LOG"
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah SDK fix"
                   SUCCESS=true
@@ -533,12 +533,12 @@ jobs:
                 "$BUILD_LOG" || true)
               if [ "${INCOMPAT:-0}" -gt 0 ]; then
                 echo "Incompatibility terdeteksi, flutter pub upgrade..."
-                flutter pub upgrade
+                fvm flutter pub upgrade
                 fix_sdk "$BUILD_LOG" || true
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah pub upgrade"
                   SUCCESS=true
@@ -553,12 +553,12 @@ jobs:
                 "$BUILD_LOG" || true)
               if [ "${INCOMPAT2:-0}" -gt 0 ]; then
                 echo "Masih incompatible, flutter pub upgrade --major-versions..."
-                flutter pub upgrade --major-versions
+                fvm flutter pub upgrade --major-versions
                 fix_sdk "$BUILD_LOG" || true
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah major upgrade"
                   SUCCESS=true
@@ -572,14 +572,14 @@ jobs:
               ICON_ERR=$(grep -cE "IconData.*can't be extended|can't be extended.*IconData|final class" \
                 "$BUILD_LOG" || true)
               if [ "${ICON_ERR:-0}" -gt 0 ]; then
-                echo "IconData final class error — force upgrade font_awesome_flutter ke ^11.0.0..."
-                flutter pub add font_awesome_flutter:'^11.0.0' 2>/dev/null || \
-                  flutter pub upgrade --major-versions 2>/dev/null || true
+                echo "IconData final class error, force upgrade font_awesome_flutter ke ^11.0.0..."
+                fvm flutter pub add font_awesome_flutter:'^11.0.0' 2>/dev/null || \
+                  fvm flutter pub upgrade --major-versions 2>/dev/null || true
                 fix_sdk "$BUILD_LOG" || true
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah font_awesome fix"
                   SUCCESS=true
@@ -595,10 +595,10 @@ jobs:
               if [ "${HAS_SDK_ERR2:-0}" -gt 0 ]; then
                 echo "SDK error catch-all setelah upgrade..."
                 fix_sdk "$BUILD_LOG" || true
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah SDK catch-all"
                   SUCCESS=true
@@ -610,16 +610,16 @@ jobs:
 
             if [ $BUILD_EXIT -ne 0 ]; then
               if grep -q "OutOfMemoryError" "$BUILD_LOG" 2>/dev/null; then
-                echo "OOM terdeteksi — disable parallel build dan naikkan memory..."
+                echo "OOM terdeteksi, disable parallel build dan naikkan memory..."
                 echo "org.gradle.parallel=false" >> android/gradle.properties
                 echo "org.gradle.workers.max=2" >> android/gradle.properties
                 echo "org.gradle.configureondemand=false" >> android/gradle.properties
                 sed -i '/org.gradle.jvmargs/d' android/gradle.properties
                 echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=3g -XX:+UseG1GC" >> android/gradle.properties
-                flutter build apk --release --no-tree-shake-icons \
+                fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
-                
+
                 if [ $BUILD_EXIT -eq 0 ]; then
                   echo "✅ BUILD BERHASIL setelah OOM fix"
                   SUCCESS=true
