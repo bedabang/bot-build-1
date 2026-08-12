@@ -1,4 +1,4 @@
-name: Build Flutter APK (Reusable)
+name: Build Flutter APK (Smart Version Pool)
 
 on:
   workflow_call:
@@ -12,6 +12,13 @@ on:
       payload:
         required: true
         type: string
+
+env:
+  FLUTTER_VERSION_POOL: |
+    3.32.0
+    3.32.5
+    3.35.0
+    3.40.0
 
 jobs:
   build:
@@ -87,33 +94,19 @@ jobs:
           echo "=== SDK Platforms tersedia ==="
           ls "$ANDROID_HOME/platforms/" 2>/dev/null || echo "(tidak ada)"
 
-      - name: Detect Flutter Version
+      - name: Detect Min SDK Requirement
+        id: detect_sdk
         run: |
           PUBSPEC="${{ env.PROJECT_ROOT }}/pubspec.yaml"
-          GRADLE_KTS="${{ env.PROJECT_ROOT }}/android/app/build.gradle.kts"
-          GRADLE_GRV="${{ env.PROJECT_ROOT }}/android/app/build.gradle"
-
-          python3 - "$PUBSPEC" "$GRADLE_KTS" "$GRADLE_GRV" <<'PYEOF'
-          import sys, re, os
-
-          pubspec_path = sys.argv[1]
-          gradle_kts   = sys.argv[2]
-          gradle_grv   = sys.argv[3]
-          github_env   = os.environ.get('GITHUB_ENV', '')
-
-          def write_env(key, val):
-              print(f"{key}: {val}")
-              if github_env:
-                  with open(github_env, 'a') as f:
-                      f.write(f"{key}={val}\n")
-
-          dart_min     = ''
-          flutter_ver  = ''
+          
+          MIN_SDK=$(python3 << 'PYEOF'
+          import re
+          import sys
 
           try:
-              with open(pubspec_path) as f:
+              with open(sys.argv[1]) as f:
                   content = f.read()
-
+              
               in_env = False
               for line in content.split('\n'):
                   if re.match(r'^environment\s*:', line):
@@ -122,133 +115,48 @@ jobs:
                   if in_env:
                       if line and not line[0].isspace() and not line.startswith('#'):
                           break
-                      m = re.match(r'^\s+flutter\s*:\s*["\']?[>=^~\s]*(\d+\.\d+\.\d+)', line)
+                      m = re.match(r'^\s+sdk\s*:\s*["\']?[>=^~\s]*(\d+\.\d+)', line)
                       if m:
-                          candidate = m.group(1)
-                          major = int(candidate.split('.')[0])
-                          if 1 <= major <= 4:
-                              flutter_ver = candidate
-                      m2 = re.match(r'^\s+sdk\s*:\s*["\']?[>=^~\s]*(\d+\.\d+)', line)
-                      if m2:
-                          dart_min = m2.group(1)
+                          print(m.group(1))
+                          sys.exit(0)
+              
+              print("3.8")
           except Exception as e:
-              print(f"Warning: gagal parse pubspec: {e}")
+              print("3.8")
+          PYEOF
+          "$PUBSPEC"
+          )
+          
+          echo "min_sdk=$MIN_SDK" >> $GITHUB_OUTPUT
+          echo "Detected min SDK: $MIN_SDK"
 
-          print(f"environment.flutter: '{flutter_ver}'")
-          print(f"environment.sdk min: '{dart_min}'")
+      - name: Select Compatible Flutter Versions
+        id: select_versions
+        env:
+          MIN_SDK: ${{ steps.detect_sdk.outputs.min_sdk }}
+        run: |
+          python3 << 'PYEOF'
+          import os
 
-          if flutter_ver:
-              write_env('FLUTTER_VERSION', flutter_ver)
-              write_env('FLUTTER_USE_EXACT', 'true')
-              sys.exit(0)
+          min_sdk = os.environ.get('MIN_SDK', '3.8')
+          pool = ["3.32.0", "3.32.5", "3.35.0", "3.40.0"]
 
-          dart_table = [
-              ('3.9', '3.35.0'), ('3.8', '3.32.0'), ('3.7', '3.29.0'), ('3.6', '3.27.0'),
-              ('3.5', '3.24.0'), ('3.4', '3.22.0'), ('3.3', '3.19.0'), ('3.2', '3.16.0'),
-              ('3.1', '3.13.0'), ('3.0', '3.10.0'),
-          ]
-          sdk_table = [
-              (37, '3.35.0'), (36, '3.32.2'), (35, '3.24.5'),
-          ]
+          compat_map = {
+              "3.8": ["3.32.0", "3.32.5", "3.35.0", "3.40.0"],
+              "3.9": ["3.32.5", "3.35.0", "3.40.0"],
+              "3.10": ["3.35.0", "3.40.0"],
+          }
 
-          result = ''
-
-          if dart_min:
-              try:
-                  major, minor = map(int, dart_min.split('.')[:2])
-                  for d_ver, f_ver in dart_table:
-                      d_major, d_minor = map(int, d_ver.split('.'))
-                      if (major, minor) >= (d_major, d_minor):
-                          result = f_ver
-                          break
-              except Exception:
-                  pass
-
-          if not result:
-              compile_sdk = 0
-              for gradle_path in [gradle_kts, gradle_grv]:
-                  if os.path.exists(gradle_path):
-                      with open(gradle_path) as f:
-                          gc = f.read()
-                      sdks = re.findall(r'compileSdk\w*\s*(?:=\s*)?(\d+)', gc)
-                      if sdks:
-                          compile_sdk = max(int(s) for s in sdks)
-                      break
-              print(f"compileSdk dari build.gradle: {compile_sdk}")
-              for sdk_min, f_ver in sdk_table:
-                  if compile_sdk >= sdk_min:
-                      result = f_ver
-                      break
-
-          if result:
-              print(f"Flutter version hasil inferensi: {result}")
-              write_env('FLUTTER_VERSION', result)
-              write_env('FLUTTER_USE_EXACT', 'true')
-          else:
-              print("Tidak ada versi yang bisa diinfer — akan pakai latest stable")
-              write_env('FLUTTER_VERSION', '')
-              write_env('FLUTTER_USE_EXACT', 'false')
+          candidates = compat_map.get(min_sdk, pool)
+          candidates_str = " ".join(candidates)
+          
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"candidates={candidates_str}\n")
+          
+          print(f"Selected Flutter versions: {candidates_str}")
           PYEOF
 
-      - name: Setup Flutter (versi exact)
-        if: env.FLUTTER_USE_EXACT == 'true'
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Setup Flutter (latest stable)
-        if: env.FLUTTER_USE_EXACT == 'false'
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Flutter Pub Get (attempt 1)
-        id: pub_get_1
-        working-directory: ${{ env.PROJECT_ROOT }}
-        continue-on-error: true
-        run: |
-          flutter pub get 2>&1 | tee /tmp/pub_get_1.log
-          exit ${PIPESTATUS[0]}
-
-      - name: Deteksi Saran Versi Flutter dari Pub
-        if: steps.pub_get_1.outcome == 'failure'
-        run: |
-          SUGGESTED=$(grep -oE "Try using the Flutter SDK version: [0-9]+\.[0-9]+\.[0-9]+" \
-            /tmp/pub_get_1.log | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          if [ -n "$SUGGESTED" ]; then
-            echo "Pub menyarankan Flutter versi: $SUGGESTED"
-            echo "SUGGESTED_FLUTTER_VERSION=$SUGGESTED" >> $GITHUB_ENV
-          else
-            echo "Tidak ada saran versi spesifik dari pub."
-          fi
-
-      - name: Setup Flutter (versi saran pub)
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION != ''
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.SUGGESTED_FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Flutter Pub Get (attempt 2)
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION != ''
-        working-directory: ${{ env.PROJECT_ROOT }}
-        run: flutter pub get
-
-      - name: Upgrade packages setelah switch Flutter versi
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION != ''
-        working-directory: ${{ env.PROJECT_ROOT }}
-        run: |
-          flutter pub upgrade 2>&1 | tail -10 || true
-
-      - name: Gagalkan Job Jika Pub Get Tetap Gagal
-        if: steps.pub_get_1.outcome == 'failure' && env.SUGGESTED_FLUTTER_VERSION == ''
-        run: |
-          echo "flutter pub get gagal dan tidak ada saran versi Flutter yang bisa dicoba."
-          exit 1
+          echo "FLUTTER_CANDIDATES=${{ steps.select_versions.outputs.candidates }}" >> $GITHUB_ENV
 
       - name: Auto-Detect & Patch compileSdk
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -315,11 +223,17 @@ jobs:
           grep -q "org.gradle.daemon" android/gradle.properties || \
             echo "org.gradle.daemon=true" >> android/gradle.properties
 
-      - name: Build APK Release
-        working-directory: ${{ env.PROJECT_ROOT }}
+      - name: Build with Flutter Version Pool Retry
+        id: build_retry
         timeout-minutes: 25
         run: |
           set +e
+
+          PROJECT_ROOT="${{ env.PROJECT_ROOT }}"
+          CANDIDATES="${{ env.FLUTTER_CANDIDATES }}"
+          ATTEMPT=0
+          SUCCESS=false
+          FLUTTER_VERSION_USED=""
 
           patch_compile_sdk() {
             local NEW_SDK="$1"
@@ -502,18 +416,49 @@ jobs:
             return 0
           }
 
-          BUILD_LOG=$(mktemp)
+          for FLUTTER_VER in $CANDIDATES; do
+            ATTEMPT=$((ATTEMPT + 1))
+            TOTAL=$(echo $CANDIDATES | wc -w)
 
-          flutter build apk --release --no-tree-shake-icons \
-            --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-          BUILD_EXIT=${PIPESTATUS[0]}
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "Attempt $ATTEMPT/$TOTAL - Flutter $FLUTTER_VER"
+            echo "════════════════════════════════════════════"
 
-          if [ $BUILD_EXIT -ne 0 ]; then
-            REQ_MIN=$(grep -oE "cannot be smaller than version [0-9]+" "$BUILD_LOG" \
-              | grep -oE "[0-9]+" | head -1)
-            if [ -n "$REQ_MIN" ]; then
-              echo "Auto-patch minSdk -> $REQ_MIN"
-              python3 - "$REQ_MIN" <<'PYEOF'
+            if [ "$ATTEMPT" -gt 1 ]; then
+              cd "$PROJECT_ROOT"
+              rm -rf build .dart_tool android/build android/app/build
+              flutter clean 2>/dev/null || true
+            fi
+
+            PUB_LOG=$(mktemp)
+            echo "Running flutter pub get..."
+            if ! flutter pub get 2>&1 | tee "$PUB_LOG"; then
+              echo "⚠️  flutter pub get gagal untuk $FLUTTER_VER, coba versi berikutnya..."
+              continue
+            fi
+
+            BUILD_LOG=$(mktemp)
+            echo "Building APK Release..."
+
+            flutter build apk --release --no-tree-shake-icons \
+              --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+            BUILD_EXIT=${PIPESTATUS[0]}
+
+            if [ $BUILD_EXIT -eq 0 ]; then
+              echo ""
+              echo "✅ BUILD BERHASIL dengan Flutter $FLUTTER_VER"
+              SUCCESS=true
+              FLUTTER_VERSION_USED="$FLUTTER_VER"
+              break
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              REQ_MIN=$(grep -oE "cannot be smaller than version [0-9]+" "$BUILD_LOG" \
+                | grep -oE "[0-9]+" | head -1)
+              if [ -n "$REQ_MIN" ]; then
+                echo "Auto-patch minSdk -> $REQ_MIN"
+                python3 - "$REQ_MIN" <<'PYEOF'
           import re, os, sys
           req = sys.argv[1]
           for path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
@@ -526,96 +471,165 @@ jobs:
                   print(f"Patched: minSdk -> {req}")
               break
           PYEOF
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah minSdk patch"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
             fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              HAS_SDK_ERR=$(grep -cE "Failed to find Platform SDK|compiles against Android SDK [0-9]+" \
+                "$BUILD_LOG" || true)
+              if [ "${HAS_SDK_ERR:-0}" -gt 0 ]; then
+                echo "Detected SDK error, attempting auto-fix..."
+                fix_sdk "$BUILD_LOG"
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah SDK fix"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              INCOMPAT=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" \
+                "$BUILD_LOG" || true)
+              if [ "${INCOMPAT:-0}" -gt 0 ]; then
+                echo "Incompatibility terdeteksi, flutter pub upgrade..."
+                flutter pub upgrade
+                fix_sdk "$BUILD_LOG" || true
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah pub upgrade"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              INCOMPAT2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" \
+                "$BUILD_LOG" || true)
+              if [ "${INCOMPAT2:-0}" -gt 0 ]; then
+                echo "Masih incompatible, flutter pub upgrade --major-versions..."
+                flutter pub upgrade --major-versions
+                fix_sdk "$BUILD_LOG" || true
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah major upgrade"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              ICON_ERR=$(grep -cE "IconData.*can't be extended|can't be extended.*IconData|final class" \
+                "$BUILD_LOG" || true)
+              if [ "${ICON_ERR:-0}" -gt 0 ]; then
+                echo "IconData final class error — force upgrade font_awesome_flutter ke ^11.0.0..."
+                flutter pub add font_awesome_flutter:'^11.0.0' 2>/dev/null || \
+                  flutter pub upgrade --major-versions 2>/dev/null || true
+                fix_sdk "$BUILD_LOG" || true
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah font_awesome fix"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              HAS_SDK_ERR2=$(grep -cE "Failed to find Platform SDK|compiles against Android SDK [0-9]+" \
+                "$BUILD_LOG" || true)
+              if [ "${HAS_SDK_ERR2:-0}" -gt 0 ]; then
+                echo "SDK error catch-all setelah upgrade..."
+                fix_sdk "$BUILD_LOG" || true
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah SDK catch-all"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            if [ $BUILD_EXIT -ne 0 ]; then
+              if grep -q "OutOfMemoryError" "$BUILD_LOG" 2>/dev/null; then
+                echo "OOM terdeteksi — disable parallel build dan naikkan memory..."
+                echo "org.gradle.parallel=false" >> android/gradle.properties
+                echo "org.gradle.workers.max=2" >> android/gradle.properties
+                echo "org.gradle.configureondemand=false" >> android/gradle.properties
+                sed -i '/org.gradle.jvmargs/d' android/gradle.properties
+                echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=3g -XX:+UseG1GC" >> android/gradle.properties
+                flutter build apk --release --no-tree-shake-icons \
+                  --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
+                BUILD_EXIT=${PIPESTATUS[0]}
+                
+                if [ $BUILD_EXIT -eq 0 ]; then
+                  echo "✅ BUILD BERHASIL setelah OOM fix"
+                  SUCCESS=true
+                  FLUTTER_VERSION_USED="$FLUTTER_VER"
+                  break
+                fi
+              fi
+            fi
+
+            echo "❌ BUILD GAGAL dengan Flutter $FLUTTER_VER"
+            ERROR_MSG=$(tail -20 "$BUILD_LOG" | grep -E "Error:|FAILURE:" | head -1)
+            echo "Error: $ERROR_MSG"
+            echo "Trying next Flutter version..."
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo ""
+            echo "❌ SEMUA VERSI FLUTTER DI POOL SUDAH DICOBA - BUILD TETAP GAGAL"
+            echo "Versi yang dicoba: $CANDIDATES"
+            exit 1
           fi
 
-          if [ $BUILD_EXIT -ne 0 ]; then
-            HAS_SDK_ERR=$(grep -cE "Failed to find Platform SDK|compiles against Android SDK [0-9]+" \
-              "$BUILD_LOG" || true)
-            if [ "${HAS_SDK_ERR:-0}" -gt 0 ]; then
-              fix_sdk "$BUILD_LOG"
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|\
-          Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" \
-              "$BUILD_LOG" || true)
-            if [ "${INCOMPAT:-0}" -gt 0 ]; then
-              echo "Incompatibility terdeteksi, flutter pub upgrade..."
-              flutter pub upgrade
-              fix_sdk "$BUILD_LOG" || true
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            INCOMPAT2=$(grep -cE "can't be (extended|implemented|mixed in) outside of its library|\
-          Error: The (method|getter|setter|class|argument) .* (isn't defined|can't be)" \
-              "$BUILD_LOG" || true)
-            if [ "${INCOMPAT2:-0}" -gt 0 ]; then
-              echo "Masih incompatible, flutter pub upgrade --major-versions..."
-              flutter pub upgrade --major-versions
-              fix_sdk "$BUILD_LOG" || true
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            ICON_ERR=$(grep -cE "IconData.*can't be extended|can't be extended.*IconData|final class" \
-              "$BUILD_LOG" || true)
-            if [ "${ICON_ERR:-0}" -gt 0 ]; then
-              echo "IconData final class error — force upgrade font_awesome_flutter ke ^11.0.0..."
-              flutter pub add font_awesome_flutter:'^11.0.0' 2>/dev/null || \
-                flutter pub upgrade --major-versions 2>/dev/null || true
-              fix_sdk "$BUILD_LOG" || true
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            HAS_SDK_ERR2=$(grep -cE "Failed to find Platform SDK|compiles against Android SDK [0-9]+" \
-              "$BUILD_LOG" || true)
-            if [ "${HAS_SDK_ERR2:-0}" -gt 0 ]; then
-              echo "SDK error catch-all setelah upgrade..."
-              fix_sdk "$BUILD_LOG" || true
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          if [ $BUILD_EXIT -ne 0 ]; then
-            if grep -q "OutOfMemoryError" "$BUILD_LOG" 2>/dev/null; then
-              echo "OOM terdeteksi — disable parallel build dan naikkan memory..."
-              echo "org.gradle.parallel=false" >> android/gradle.properties
-              echo "org.gradle.workers.max=2" >> android/gradle.properties
-              echo "org.gradle.configureondemand=false" >> android/gradle.properties
-              sed -i '/org.gradle.jvmargs/d' android/gradle.properties
-              echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=3g -XX:+UseG1GC" >> android/gradle.properties
-              flutter build apk --release --no-tree-shake-icons \
-                --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
-              BUILD_EXIT=${PIPESTATUS[0]}
-            fi
-          fi
-
-          exit $BUILD_EXIT
+          echo "flutter_version_used=$FLUTTER_VERSION_USED" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
+        if: steps.build_retry.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.jobId }}
           path: ${{ env.PROJECT_ROOT }}/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 7
+
+      - name: Build Success Summary
+        if: steps.build_retry.outcome == 'success'
+        run: |
+          echo "✅ BUILD BERHASIL"
+          echo "Flutter Version: ${{ steps.build_retry.outputs.flutter_version_used }}"
+          echo "APK Path: ${{ env.PROJECT_ROOT }}/build/app/outputs/flutter-apk/app-release.apk"
