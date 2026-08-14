@@ -92,11 +92,8 @@ jobs:
             "ndk;28.2.13676358" \
             "build-tools;35.0.0" \
             "platforms;android-35" \
-            "platforms;android-36" 2>&1 | tail -5 || true
-
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            --sdk_root=$ANDROID_HOME \
-            "platforms;android-37" 2>&1 | tail -3 || true
+            "platforms;android-36" \
+            "platforms;android-37" 2>&1 | tail -5 || true
 
           echo "=== SDK Platforms tersedia ==="
           ls "$ANDROID_HOME/platforms/" 2>/dev/null || echo "(tidak ada)"
@@ -168,61 +165,6 @@ jobs:
           echo "FLUTTER_CANDIDATES=$CANDIDATES" >> $GITHUB_ENV
           echo "Selected Flutter versions: $CANDIDATES"
 
-      - name: Auto-Detect & Patch compileSdk
-        working-directory: ${{ env.PROJECT_ROOT }}
-        run: |
-          PROJECT_SDK=0
-          GRADLE_FILE=""
-          for f in "android/app/build.gradle.kts" "android/app/build.gradle"; do
-            if [ -f "$f" ]; then
-              SDK=$(grep -E "compileSdk" "$f" 2>/dev/null | grep -oE '[0-9]{2,}' | sort -n | tail -1 || echo "0")
-              [ -n "$SDK" ] && [ "$SDK" -gt 0 ] && PROJECT_SDK=$SDK && GRADLE_FILE="$f"
-              break
-            fi
-          done
-          echo "Project compileSdk: $PROJECT_SDK"
-
-          PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
-          PLUGIN_SDK=$(find "$PUB_CACHE_DIR" -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) \
-            2>/dev/null | xargs grep -h "compileSdk" 2>/dev/null \
-            | grep -oE '[0-9]{2,}' | sort -n | tail -1 || echo "0")
-          echo "Highest compileSdk dari plugins: $PLUGIN_SDK"
-
-          REQUIRED_SDK=$PROJECT_SDK
-          [ -n "$PLUGIN_SDK" ] && [ "$PLUGIN_SDK" -gt "$REQUIRED_SDK" ] 2>/dev/null && REQUIRED_SDK=$PLUGIN_SDK
-          [ -z "$REQUIRED_SDK" ] || [ "$REQUIRED_SDK" -lt 35 ] && REQUIRED_SDK=35
-
-          echo "Required SDK: $REQUIRED_SDK"
-
-          if [ ! -d "$ANDROID_HOME/platforms/android-$REQUIRED_SDK" ]; then
-            echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-              "platforms;android-$REQUIRED_SDK" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
-          fi
-
-          if [ -n "$GRADLE_FILE" ] && [ "$REQUIRED_SDK" -gt "$PROJECT_SDK" ]; then
-            if [ -d "$ANDROID_HOME/platforms/android-$REQUIRED_SDK" ]; then
-              echo "Patching $GRADLE_FILE: compileSdk $PROJECT_SDK -> $REQUIRED_SDK"
-              python3 - "$GRADLE_FILE" "$PROJECT_SDK" "$REQUIRED_SDK" <<'PYEOF'
-          import sys, re
-          gradle_file, old_sdk, new_sdk = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(gradle_file) as f:
-              content = f.read()
-          p = re.sub(r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old_sdk),
-                     lambda m: m.group(1) + new_sdk, content)
-          p = re.sub(r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old_sdk),
-                     lambda m: m.group(1) + new_sdk, p)
-          with open(gradle_file, 'w') as f:
-              f.write(p)
-          print(f"Done: compileSdk/targetSdk {old_sdk} -> {new_sdk}")
-          PYEOF
-              grep -E "compileSdk|targetSdk" "$GRADLE_FILE"
-            else
-              echo "SDK $REQUIRED_SDK tidak tersedia, skip patch. Recovery build yang akan handle."
-            fi
-          else
-            echo "Tidak perlu patch compileSdk."
-          fi
-
       - name: Tune JVM Memory untuk Gradle
         working-directory: ${{ env.PROJECT_ROOT }}
         run: |
@@ -258,7 +200,7 @@ jobs:
           SUCCESS=false
           FLUTTER_VERSION_USED=""
           FA_VERSION_USED=""
-          MAX_SDK_CEILING=36
+          MAX_SDK_CEILING=37
           APPLY_PH_OVERRIDE=false
 
           export PATH="$PATH:$HOME/.pub-cache/bin"
@@ -388,8 +330,8 @@ jobs:
               return 0
             fi
 
-            if [ "$TARGET" -gt "$MAX_SDK_CEILING" ]; then
-              echo "SDK $TARGET melebihi batas aman ($MAX_SDK_CEILING) di runner ini, skip install dan langsung downgrade package via dependency_overrides..."
+            if [ "$TARGET" -gt "$MAX_SDK_CEILING" ] && [ "$FLUTTER_VER" != "3.47.0" ]; then
+              echo "SDK $TARGET melebihi batas aman ($MAX_SDK_CEILING), skip install dan downgrade packages..."
             else
               echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
                 "platforms;android-$TARGET" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
@@ -400,8 +342,9 @@ jobs:
                 return 0
               fi
 
-              echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages via dependency_overrides..."
+              echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages..."
             fi
+
             MAX_AVAIL=$(ls "$ANDROID_HOME/platforms/" 2>/dev/null \
               | grep -oE 'android-[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
@@ -537,6 +480,40 @@ jobs:
             fvm use $FLUTTER_VER --force 2>&1 | tail -3
             fvm flutter --version
 
+            if [ "$FLUTTER_VER" = "3.47.0" ]; then
+              TARGET_COMPILE_SDK=37
+            else
+              TARGET_COMPILE_SDK=36
+            fi
+            echo "Target compileSdk untuk Flutter $FLUTTER_VER: $TARGET_COMPILE_SDK"
+
+            for gradle_path in "android/app/build.gradle.kts" "android/app/build.gradle"; do
+              [ -f "$gradle_path" ] || continue
+              python3 - "$gradle_path" "$TARGET_COMPILE_SDK" <<'PYEOF'
+          import re, sys
+          gradle_file, new_sdk = sys.argv[1], sys.argv[2]
+          with open(gradle_file) as f:
+              content = f.read()
+          m = re.search(r'compileSdk(?:Version)?\s*(?:=\s*)?(\d+)', content)
+          if m:
+              old = m.group(1)
+              p = re.sub(r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
+                         lambda x: x.group(1) + new_sdk, content)
+              p = re.sub(r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
+                         lambda x: x.group(1) + new_sdk, p)
+              with open(gradle_file, 'w') as f:
+                  f.write(p)
+              print(f"Patched {gradle_file}: compileSdk/targetSdk {old} -> {new_sdk}")
+          PYEOF
+              break
+            done
+
+            if [ ! -d "$ANDROID_HOME/platforms/android-$TARGET_COMPILE_SDK" ]; then
+              echo "Installing platforms;android-$TARGET_COMPILE_SDK..."
+              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+                "platforms;android-$TARGET_COMPILE_SDK" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
+            fi
+
             if [ "$ATTEMPT" -gt 1 ]; then
               rm -rf build .dart_tool android/build android/app/build
               fvm flutter clean 2>/dev/null || true
@@ -547,7 +524,7 @@ jobs:
             for FA_VER in $FA_VERSIONS_TO_TRY; do
               echo ""
               if [ "$FA_VER" = "ORIGINAL" ]; then
-                echo "-- Flutter $FLUTTER_VER + font_awesome_flutter (versi asli project, tidak diubah) --"
+                echo "-- Flutter $FLUTTER_VER + font_awesome_flutter (versi asli project) --"
               else
                 echo "-- Flutter $FLUTTER_VER + font_awesome_flutter $FA_VER --"
                 pin_fa_version "$FA_VER"
@@ -580,7 +557,7 @@ jobs:
                 PH_SDK_ERR=$(grep -cE "permission_handler_android requires Android SDK|permission_handler_android:compileRelease.*Platform SDK" \
                   "$BUILD_LOG" || true)
                 if [ "${PH_SDK_ERR:-0}" -gt 0 ]; then
-                  echo "permission_handler_android minta SDK yang gak ada di runner, apply override khusus untuk itu..."
+                  echo "permission_handler_android minta SDK yang gak ada di runner, apply override..."
                   APPLY_PH_OVERRIDE=true
                   pin_safe_overrides
                   fvm flutter pub get 2>&1 | tee "$PUB_LOG"
@@ -756,7 +733,7 @@ jobs:
 
               echo "❌ BUILD GAGAL dengan Flutter $FLUTTER_VER + font_awesome_flutter $FA_VER"
               echo "-- Ringkasan error compile Dart (lib/*.dart) --"
-              grep -E "^lib/.*Error:" "$BUILD_LOG" | head -15 || echo "(tidak ada error compile Dart spesifik, cek log lengkap di atas)"
+              grep -E "^lib/.*Error:" "$BUILD_LOG" | head -15 || echo "(tidak ada error compile Dart spesifik)"
               ERROR_MSG=$(tail -20 "$BUILD_LOG" | grep -E "Error:|FAILURE:" | head -1)
               echo "Error: $ERROR_MSG"
             done
