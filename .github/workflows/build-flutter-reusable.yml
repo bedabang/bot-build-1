@@ -294,6 +294,48 @@ jobs:
           PYEOF
           }
 
+          pin_safe_overrides() {
+            python3 <<'PYEOF'
+          import re, os
+
+          pubspec_path = "pubspec.yaml"
+          if not os.path.exists(pubspec_path):
+              exit(0)
+
+          with open(pubspec_path) as f:
+              content = f.read()
+
+          overrides_to_add = {
+              'permission_handler_android': '"<13.0.0"',
+          }
+
+          if 'dependency_overrides:' not in content:
+              entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
+              content = content.rstrip() + '\n\ndependency_overrides:\n' + entries
+          else:
+              for pkg, ver in overrides_to_add.items():
+                  if re.search(rf'^\s+{re.escape(pkg)}\s*:', content, re.M):
+                      content = re.sub(
+                          rf'(^\s*{re.escape(pkg)}\s*:\s*).*$',
+                          rf'\1{ver}',
+                          content,
+                          count=1,
+                          flags=re.M
+                      )
+                  else:
+                      content = re.sub(
+                          r'(dependency_overrides:\s*\n)',
+                          f'\\1  {pkg}: {ver}\n',
+                          content
+                      )
+
+          with open(pubspec_path, 'w') as f:
+              f.write(content)
+
+          print("Pinned permission_handler_android to <13.0.0")
+          PYEOF
+          }
+
           patch_compile_sdk() {
             local NEW_SDK="$1"
             for path in "android/app/build.gradle.kts" "android/app/build.gradle"; do
@@ -506,11 +548,19 @@ jobs:
               echo "-- Flutter $FLUTTER_VER + font_awesome_flutter $FA_VER --"
 
               pin_fa_version "$FA_VER"
+              pin_safe_overrides
 
               PUB_LOG=$(mktemp)
               if ! fvm flutter pub get 2>&1 | tee "$PUB_LOG"; then
                 echo "flutter pub get gagal dengan font_awesome_flutter $FA_VER, coba versi berikutnya..."
                 continue
+              fi
+
+              if grep -q "permission_handler_android.*(overridden)" "$PUB_LOG"; then
+                echo "✅ Override permission_handler_android aktif"
+              else
+                echo "⚠️ Override permission_handler_android TIDAK aktif, cek versi resolusi manual..."
+                grep -E "^\s*permission_handler" "$PUB_LOG" || true
               fi
 
               BUILD_LOG=$(mktemp)
@@ -666,7 +716,7 @@ jobs:
               content = f.read()
 
           overrides_to_add = {
-              'permission_handler_android': '">=13.0.0 <14.0.0"',
+              'permission_handler_android': '"<13.0.0"',
           }
 
           if 'dependency_overrides:' not in content:
