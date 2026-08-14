@@ -258,6 +258,7 @@ jobs:
           SUCCESS=false
           FLUTTER_VERSION_USED=""
           FA_VERSION_USED=""
+          MAX_SDK_CEILING=36
 
           export PATH="$PATH:$HOME/.pub-cache/bin"
 
@@ -344,16 +345,20 @@ jobs:
               return 0
             fi
 
-            echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-              "platforms;android-$TARGET" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
+            if [ "$TARGET" -gt "$MAX_SDK_CEILING" ]; then
+              echo "SDK $TARGET melebihi batas aman ($MAX_SDK_CEILING) di runner ini, skip install dan langsung downgrade package via dependency_overrides..."
+            else
+              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+                "platforms;android-$TARGET" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
 
-            if [ -d "$ANDROID_HOME/platforms/android-$TARGET" ]; then
-              echo "SDK $TARGET berhasil ter-install"
-              patch_compile_sdk "$TARGET"
-              return 0
+              if [ -d "$ANDROID_HOME/platforms/android-$TARGET" ]; then
+                echo "SDK $TARGET berhasil ter-install"
+                patch_compile_sdk "$TARGET"
+                return 0
+              fi
+
+              echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages via dependency_overrides..."
             fi
-
-            echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages via dependency_overrides..."
             MAX_AVAIL=$(ls "$ANDROID_HOME/platforms/" 2>/dev/null \
               | grep -oE 'android-[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
@@ -494,11 +499,7 @@ jobs:
               fvm flutter clean 2>/dev/null || true
             fi
 
-            if [ "$FLUTTER_VER" = "3.47.0" ]; then
-              FA_VERSIONS_TO_TRY="11.0.0"
-            else
-              FA_VERSIONS_TO_TRY="10.9.0 10.9.1 11.0.0"
-            fi
+            FA_VERSIONS_TO_TRY="10.9.0 10.9.1 11.0.0"
 
             for FA_VER in $FA_VERSIONS_TO_TRY; do
               echo ""
