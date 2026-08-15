@@ -74,14 +74,6 @@ jobs:
 
       - name: Fix Android SDK Path
         run: echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
-        
-      - name: Debug SDK Path
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          cat "${{ env.PROJECT_ROOT }}/android/local.properties"
-          ls "$ANDROID_HOME/platforms/" | grep "37" || echo "tidak ada 37 di ANDROID_HOME"
-          ls "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/platforms/" | grep "37" || echo "tidak ada 37 di ANDROID_SDK_ROOT"
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -107,7 +99,7 @@ jobs:
             "platforms;android-37" 2>&1 | tail -3 || true
 
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
-            for VARIANT in "android-37.0" "android-37.1" "android-37.2-beta1" "android-37.2"; do
+            for VARIANT in "android-37.0" "android-37.1" "android-37.2-beta1" "android-37.2" "android-37.2-beta2"; do
               if [ -d "$ANDROID_HOME/platforms/$VARIANT" ]; then
                 echo "Menyalin $VARIANT ke android-37..."
                 cp -r "$ANDROID_HOME/platforms/$VARIANT" "$ANDROID_HOME/platforms/android-37"
@@ -125,7 +117,7 @@ jobs:
           fi
 
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
-            echo "sdkmanager dan symlink gagal, mencoba wget dari Google..."
+            echo "sdkmanager dan copy gagal, mencoba wget dari Google..."
             SDK37_INSTALLED=false
 
             for ZIP_NAME in "platform-37_r01.zip" "android-37_r01.zip" "platform-37_r02.zip"; do
@@ -245,7 +237,6 @@ jobs:
           import os
 
           min_sdk = os.environ.get('MIN_SDK', '3.8')
-          pool = ["3.32.0", "3.32.5", "3.35.0", "3.38.0", "3.47.0"]
 
           compat_map = {
               "3.8": ["3.32.0", "3.32.5", "3.35.0", "3.38.0"],
@@ -379,6 +370,69 @@ jobs:
           PYEOF
           }
 
+          patch_launcher_icons() {
+            python3 <<'PYEOF'
+          import re, os
+
+          pubspec_path = "pubspec.yaml"
+          if not os.path.exists(pubspec_path):
+              exit(0)
+
+          with open(pubspec_path) as f:
+              content = f.read()
+
+          new_content = re.sub(
+              r'(flutter_launcher_icons\s*:\s*)["\^]*0\.13\.[0-9]+["]*',
+              r'\g<1>"^0.14.0"',
+              content
+          )
+
+          if new_content != content:
+              with open(pubspec_path, 'w') as f:
+                  f.write(new_content)
+              print("Patched flutter_launcher_icons to ^0.14.0")
+          else:
+              print("flutter_launcher_icons tidak perlu patch atau tidak ditemukan")
+          PYEOF
+          }
+
+          fix_agp_kotlin() {
+            local FLUTTER_VER="$1"
+            local SETTINGS_FILE="android/settings.gradle.kts"
+            [ -f "$SETTINGS_FILE" ] || return 0
+
+            if [ "$FLUTTER_VER" = "3.47.0" ]; then
+              TARGET_AGP="8.7.0"
+              TARGET_KOTLIN="2.0.21"
+            elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
+              TARGET_AGP="8.3.2"
+              TARGET_KOTLIN="1.9.25"
+            else
+              TARGET_AGP="8.3.2"
+              TARGET_KOTLIN="1.9.22"
+            fi
+
+            python3 - "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN" <<'SETTINGS_PYEOF'
+          import re, sys
+          settings_file, agp_ver, kotlin_ver = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(settings_file) as f:
+              content = f.read()
+          content = re.sub(
+              r'(id\("com\.android\.application"\)\s+version\s+")[^"]+(")',
+              lambda m: m.group(1) + agp_ver + m.group(2),
+              content
+          )
+          content = re.sub(
+              r'(id\("org\.jetbrains\.kotlin\.android"\)\s+version\s+")[^"]+(")',
+              lambda m: m.group(1) + kotlin_ver + m.group(2),
+              content
+          )
+          with open(settings_file, 'w') as f:
+              f.write(content)
+          print(f"Patched settings.gradle.kts: AGP -> {agp_ver}, Kotlin -> {kotlin_ver}")
+          SETTINGS_PYEOF
+          }
+
           patch_compile_sdk() {
             local NEW_SDK="$1"
             for path in "android/app/build.gradle.kts" "android/app/build.gradle"; do
@@ -404,46 +458,6 @@ jobs:
           PYEOF
               break
             done
-          }
-
-          patch_agp_kotlin() {
-            local FLUTTER_VER="$1"
-            local SETTINGS_FILE="android/settings.gradle.kts"
-            [ -f "$SETTINGS_FILE" ] || return 0
-
-            if [ "$FLUTTER_VER" = "3.47.0" ]; then
-              TARGET_AGP="8.7.0"
-              TARGET_KOTLIN="2.0.21"
-            elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
-              TARGET_AGP="8.3.2"
-              TARGET_KOTLIN="1.9.25"
-            else
-              TARGET_AGP="8.3.2"
-              TARGET_KOTLIN="1.9.22"
-            fi
-
-            python3 - "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN" <<'SETTINGS_PYEOF'
-          import re, sys
-          settings_file, agp_ver, kotlin_ver = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(settings_file) as f:
-              content = f.read()
-
-          content = re.sub(
-              r'(id\("com\.android\.application"\)\s+version\s+")[^"]+(")',
-              lambda m: m.group(1) + agp_ver + m.group(2),
-              content
-          )
-          content = re.sub(
-              r'(id\("org\.jetbrains\.kotlin\.android"\)\s+version\s+")[^"]+(")',
-              lambda m: m.group(1) + kotlin_ver + m.group(2),
-              content
-          )
-
-          with open(settings_file, 'w') as f:
-              f.write(content)
-
-          print(f"Patched settings.gradle.kts: AGP -> {agp_ver}, Kotlin -> {kotlin_ver}")
-          SETTINGS_PYEOF
           }
 
           fix_sdk() {
@@ -486,7 +500,7 @@ jobs:
             fi
 
             MAX_AVAIL=$(ls "$ANDROID_HOME/platforms/" 2>/dev/null \
-              | grep -oE 'android-[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
+              | grep -oE 'android-[0-9]+$' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
 
             python3 - "$TARGET" "$MAX_AVAIL" "${PUB_CACHE:-$HOME/.pub-cache}" "$(pwd)" <<'DOWNGRADE_PYEOF'
@@ -620,7 +634,8 @@ jobs:
             fvm use $FLUTTER_VER --force 2>&1 | tail -3
             fvm flutter --version
 
-            patch_agp_kotlin "$FLUTTER_VER"
+            fix_agp_kotlin "$FLUTTER_VER"
+            patch_launcher_icons
 
             if [ "$ATTEMPT" -gt 1 ]; then
               rm -rf build .dart_tool android/build android/app/build
@@ -788,10 +803,10 @@ jobs:
                 fi
               fi
 
-              KOTLIN_ERR=$(grep -cE "Unresolved reference.*compilerOptions|kotlin\s*\{.*Unresolved|compilerOptions.*Unresolved|kgpVersion|KgpUtils" \
+              KOTLIN_ERR=$(grep -cE "Unresolved reference.*compilerOptions|kotlin\s*\{.*Unresolved|compilerOptions.*Unresolved|kgpVersion|KgpUtils|incompatible version of Kotlin|metadata version" \
                 "$BUILD_LOG" 2>/dev/null || true)
               if [ "${KOTLIN_ERR:-0}" -gt 0 ]; then
-                echo "Kotlin DSL version error terdeteksi, injecting dependency_overrides..."
+                echo "Kotlin incompatibility terdeteksi, injecting dependency_overrides..."
                 python3 - "$(pwd)" <<'KOTLIN_PYEOF'
           import re, sys, os
 
@@ -831,7 +846,7 @@ jobs:
                 BUILD_EXIT=${PIPESTATUS[0]}
 
                 if [ $BUILD_EXIT -eq 0 ]; then
-                  echo "✅ BUILD BERHASIL setelah Kotlin DSL fix"
+                  echo "✅ BUILD BERHASIL setelah Kotlin fix"
                   SUCCESS=true
                   FLUTTER_VERSION_USED="$FLUTTER_VER"
                   FA_VERSION_USED="$FA_VER"
