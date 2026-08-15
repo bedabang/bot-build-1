@@ -101,8 +101,9 @@ jobs:
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
             for VARIANT in "android-37.0" "android-37.1" "android-37.2-beta1" "android-37.2"; do
               if [ -d "$ANDROID_HOME/platforms/$VARIANT" ]; then
-                ln -s "$ANDROID_HOME/platforms/$VARIANT" "$ANDROID_HOME/platforms/android-37"
-                echo "Symlink dibuat: android-37 -> $VARIANT"
+                echo "Menyalin $VARIANT ke android-37..."
+                cp -r "$ANDROID_HOME/platforms/$VARIANT" "$ANDROID_HOME/platforms/android-37"
+                echo "Copy selesai: android-37 dari $VARIANT"
                 break
               fi
             done
