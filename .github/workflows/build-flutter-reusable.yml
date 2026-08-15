@@ -92,8 +92,82 @@ jobs:
             "ndk;28.2.13676358" \
             "build-tools;35.0.0" \
             "platforms;android-35" \
-            "platforms;android-36" \
-            "platforms;android-37" 2>&1 | tail -5 || true
+            "platforms;android-36" 2>&1 | tail -5 || true
+
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            --sdk_root=$ANDROID_HOME \
+            "platforms;android-37" 2>&1 | tail -3 || true
+
+          if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            echo "sdkmanager gagal, mencoba wget dari Google..."
+            SDK37_INSTALLED=false
+
+            for ZIP_NAME in "platform-37_r01.zip" "android-37_r01.zip" "platform-37_r02.zip"; do
+              wget -q --timeout=60 \
+                "https://dl.google.com/android/repository/${ZIP_NAME}" \
+                -O /tmp/android-37.zip 2>/dev/null || true
+
+              if [ -f /tmp/android-37.zip ] && [ -s /tmp/android-37.zip ]; then
+                FILE_TYPE=$(file /tmp/android-37.zip | grep -i "zip\|archive" || true)
+                if [ -n "$FILE_TYPE" ]; then
+                  echo "Download berhasil: ${ZIP_NAME}"
+                  mkdir -p /tmp/android-37-extracted
+                  unzip -qq /tmp/android-37.zip -d /tmp/android-37-extracted 2>/dev/null || true
+                  INNER=$(find /tmp/android-37-extracted -maxdepth 1 -mindepth 1 -type d | head -1)
+                  if [ -n "$INNER" ]; then
+                    mkdir -p "$ANDROID_HOME/platforms/android-37"
+                    cp -r "$INNER/." "$ANDROID_HOME/platforms/android-37/"
+                    SDK37_INSTALLED=true
+                    echo "SDK 37 berhasil di-install via wget"
+                    break
+                  fi
+                fi
+              fi
+              rm -f /tmp/android-37.zip
+            done
+
+            if [ "$SDK37_INSTALLED" = false ]; then
+              echo "Semua URL wget gagal, mencoba ssl.google.com..."
+              for ZIP_NAME in "platform-37_r01.zip" "android-37_r01.zip"; do
+                wget -q --timeout=60 \
+                  "https://dl-ssl.google.com/android/repository/${ZIP_NAME}" \
+                  -O /tmp/android-37.zip 2>/dev/null || true
+
+                if [ -f /tmp/android-37.zip ] && [ -s /tmp/android-37.zip ]; then
+                  FILE_TYPE=$(file /tmp/android-37.zip | grep -i "zip\|archive" || true)
+                  if [ -n "$FILE_TYPE" ]; then
+                    echo "Download berhasil dari ssl mirror: ${ZIP_NAME}"
+                    mkdir -p /tmp/android-37-extracted2
+                    unzip -qq /tmp/android-37.zip -d /tmp/android-37-extracted2 2>/dev/null || true
+                    INNER=$(find /tmp/android-37-extracted2 -maxdepth 1 -mindepth 1 -type d | head -1)
+                    if [ -n "$INNER" ]; then
+                      mkdir -p "$ANDROID_HOME/platforms/android-37"
+                      cp -r "$INNER/." "$ANDROID_HOME/platforms/android-37/"
+                      SDK37_INSTALLED=true
+                      echo "SDK 37 berhasil di-install via ssl mirror"
+                      break
+                    fi
+                  fi
+                fi
+                rm -f /tmp/android-37.zip
+              done
+            fi
+
+            if [ "$SDK37_INSTALLED" = false ]; then
+              echo "SDK 37 tidak tersedia dari semua sumber, fallback downgrade ke SDK 36..."
+              for gradle_file in "${{ env.PROJECT_ROOT }}/android/app/build.gradle.kts" "${{ env.PROJECT_ROOT }}/android/app/build.gradle"; do
+                [ -f "$gradle_file" ] || continue
+                sed -i 's/compileSdk\s*=\s*37/compileSdk = 36/g' "$gradle_file" || true
+                sed -i 's/targetSdk\s*=\s*37/targetSdk = 36/g' "$gradle_file" || true
+                sed -i 's/compileSdkVersion\s*37/compileSdkVersion 36/g' "$gradle_file" || true
+                sed -i 's/targetSdkVersion\s*37/targetSdkVersion 36/g' "$gradle_file" || true
+                echo "Fallback: compileSdk/targetSdk diturunkan ke 36 di $gradle_file"
+                break
+              done
+            fi
+          else
+            echo "SDK 37 sudah tersedia"
+          fi
 
           echo "=== SDK Platforms tersedia ==="
           ls "$ANDROID_HOME/platforms/" 2>/dev/null || echo "(tidak ada)"
@@ -479,40 +553,6 @@ jobs:
             fvm install $FLUTTER_VER 2>&1 | tail -5
             fvm use $FLUTTER_VER --force 2>&1 | tail -3
             fvm flutter --version
-
-            if [ "$FLUTTER_VER" = "3.47.0" ]; then
-              TARGET_COMPILE_SDK=37
-            else
-              TARGET_COMPILE_SDK=36
-            fi
-            echo "Target compileSdk untuk Flutter $FLUTTER_VER: $TARGET_COMPILE_SDK"
-
-            for gradle_path in "android/app/build.gradle.kts" "android/app/build.gradle"; do
-              [ -f "$gradle_path" ] || continue
-              python3 - "$gradle_path" "$TARGET_COMPILE_SDK" <<'PYEOF'
-          import re, sys
-          gradle_file, new_sdk = sys.argv[1], sys.argv[2]
-          with open(gradle_file) as f:
-              content = f.read()
-          m = re.search(r'compileSdk(?:Version)?\s*(?:=\s*)?(\d+)', content)
-          if m:
-              old = m.group(1)
-              p = re.sub(r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
-                         lambda x: x.group(1) + new_sdk, content)
-              p = re.sub(r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
-                         lambda x: x.group(1) + new_sdk, p)
-              with open(gradle_file, 'w') as f:
-                  f.write(p)
-              print(f"Patched {gradle_file}: compileSdk/targetSdk {old} -> {new_sdk}")
-          PYEOF
-              break
-            done
-
-            if [ ! -d "$ANDROID_HOME/platforms/android-$TARGET_COMPILE_SDK" ]; then
-              echo "Installing platforms;android-$TARGET_COMPILE_SDK..."
-              echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-                "platforms;android-$TARGET_COMPILE_SDK" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
-            fi
 
             if [ "$ATTEMPT" -gt 1 ]; then
               rm -rf build .dart_tool android/build android/app/build
