@@ -99,7 +99,17 @@ jobs:
             "platforms;android-37" 2>&1 | tail -3 || true
 
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
-            echo "sdkmanager gagal, mencoba wget dari Google..."
+            for VARIANT in "android-37.0" "android-37.1" "android-37.2-beta1" "android-37.2"; do
+              if [ -d "$ANDROID_HOME/platforms/$VARIANT" ]; then
+                ln -s "$ANDROID_HOME/platforms/$VARIANT" "$ANDROID_HOME/platforms/android-37"
+                echo "Symlink dibuat: android-37 -> $VARIANT"
+                break
+              fi
+            done
+          fi
+
+          if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            echo "sdkmanager dan symlink gagal, mencoba wget dari Google..."
             SDK37_INSTALLED=false
 
             for ZIP_NAME in "platform-37_r01.zip" "android-37_r01.zip" "platform-37_r02.zip"; do
