@@ -74,6 +74,14 @@ jobs:
 
       - name: Fix Android SDK Path
         run: echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
+        
+      - name: Debug SDK Path
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          cat "${{ env.PROJECT_ROOT }}/android/local.properties"
+          ls "$ANDROID_HOME/platforms/" | grep "37" || echo "tidak ada 37 di ANDROID_HOME"
+          ls "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/platforms/" | grep "37" || echo "tidak ada 37 di ANDROID_SDK_ROOT"
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -103,6 +111,13 @@ jobs:
               if [ -d "$ANDROID_HOME/platforms/$VARIANT" ]; then
                 echo "Menyalin $VARIANT ke android-37..."
                 cp -r "$ANDROID_HOME/platforms/$VARIANT" "$ANDROID_HOME/platforms/android-37"
+                if [ -f "$ANDROID_HOME/platforms/android-37/package.xml" ]; then
+                  sed -i 's|<api-level>[0-9.]*</api-level>|<api-level>37</api-level>|g' \
+                    "$ANDROID_HOME/platforms/android-37/package.xml" || true
+                  sed -i 's|<codename>[^<]*</codename>|<codename></codename>|g' \
+                    "$ANDROID_HOME/platforms/android-37/package.xml" || true
+                  echo "package.xml diupdate untuk android-37"
+                fi
                 echo "Copy selesai: android-37 dari $VARIANT"
                 break
               fi
