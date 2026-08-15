@@ -73,7 +73,10 @@ jobs:
           fi
 
       - name: Fix Android SDK Path
-        run: echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
+          echo "Isi local.properties:"
+          cat "${{ env.PROJECT_ROOT }}/android/local.properties"
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -190,6 +193,14 @@ jobs:
           echo "=== SDK Platforms tersedia ==="
           ls "$ANDROID_HOME/platforms/" 2>/dev/null || echo "(tidak ada)"
 
+          echo "=== Verifikasi android-37 ==="
+          if [ -d "$ANDROID_HOME/platforms/android-37" ]; then
+            echo "android-37 ADA"
+            ls "$ANDROID_HOME/platforms/android-37/" | head -10
+          else
+            echo "android-37 TIDAK ADA"
+          fi
+
       - name: Detect Min SDK Requirement
         id: detect_sdk
         env:
@@ -293,8 +304,23 @@ jobs:
           FA_VERSION_USED=""
           MAX_SDK_CEILING=37
           APPLY_PH_OVERRIDE=false
+          ANDROID_SDK_DIR="$ANDROID_HOME"
 
           export PATH="$PATH:$HOME/.pub-cache/bin"
+
+          refresh_local_properties() {
+            echo "sdk.dir=$ANDROID_SDK_DIR" > android/local.properties
+            FLUTTER_ROOT=$(fvm flutter --version --machine 2>/dev/null \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('flutterRoot',''))" \
+              2>/dev/null || echo "")
+            if [ -n "$FLUTTER_ROOT" ]; then
+              echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+            fi
+            echo "=== local.properties ==="
+            cat android/local.properties
+            echo "=== android-37 check ==="
+            ls "$ANDROID_SDK_DIR/platforms/android-37/" | head -5 || echo "android-37 TIDAK ADA di $ANDROID_SDK_DIR"
+          }
 
           pin_fa_version() {
             local FA_VER="$1"
@@ -478,8 +504,8 @@ jobs:
 
             echo "SDK fix: dibutuhkan platforms;android-$TARGET"
 
-            if [ -d "$ANDROID_HOME/platforms/android-$TARGET" ]; then
-              echo "SDK $TARGET sudah ada, hanya patch compileSdk"
+            if [ -d "$ANDROID_SDK_DIR/platforms/android-$TARGET" ]; then
+              echo "SDK $TARGET sudah ada di $ANDROID_SDK_DIR, hanya patch compileSdk"
               patch_compile_sdk "$TARGET"
               return 0
             fi
@@ -488,9 +514,9 @@ jobs:
               echo "SDK $TARGET melebihi batas aman ($MAX_SDK_CEILING), skip install dan downgrade packages..."
             else
               echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-                "platforms;android-$TARGET" --sdk_root=$ANDROID_HOME 2>&1 | tail -5 || true
+                "platforms;android-$TARGET" --sdk_root=$ANDROID_SDK_DIR 2>&1 | tail -5 || true
 
-              if [ -d "$ANDROID_HOME/platforms/android-$TARGET" ]; then
+              if [ -d "$ANDROID_SDK_DIR/platforms/android-$TARGET" ]; then
                 echo "SDK $TARGET berhasil ter-install"
                 patch_compile_sdk "$TARGET"
                 return 0
@@ -499,7 +525,7 @@ jobs:
               echo "SDK $TARGET tidak tersedia via sdkmanager, downgrade packages..."
             fi
 
-            MAX_AVAIL=$(ls "$ANDROID_HOME/platforms/" 2>/dev/null \
+            MAX_AVAIL=$(ls "$ANDROID_SDK_DIR/platforms/" 2>/dev/null \
               | grep -oE 'android-[0-9]+$' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
 
@@ -636,6 +662,7 @@ jobs:
 
             fix_agp_kotlin "$FLUTTER_VER"
             patch_launcher_icons
+            refresh_local_properties
 
             if [ "$ATTEMPT" -gt 1 ]; then
               rm -rf build .dart_tool android/build android/app/build
@@ -657,11 +684,15 @@ jobs:
                 pin_safe_overrides
               fi
 
+              refresh_local_properties
+
               PUB_LOG=$(mktemp)
               if ! fvm flutter pub get 2>&1 | tee "$PUB_LOG"; then
                 echo "flutter pub get gagal, coba versi berikutnya..."
                 continue
               fi
+
+              refresh_local_properties
 
               BUILD_LOG=$(mktemp)
               fvm flutter build apk --release --no-tree-shake-icons \
@@ -683,7 +714,9 @@ jobs:
                   echo "permission_handler_android minta SDK yang gak ada di runner, apply override..."
                   APPLY_PH_OVERRIDE=true
                   pin_safe_overrides
+                  refresh_local_properties
                   fvm flutter pub get 2>&1 | tee "$PUB_LOG"
+                  refresh_local_properties
                   fvm flutter build apk --release --no-tree-shake-icons \
                     --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                   BUILD_EXIT=${PIPESTATUS[0]}
@@ -715,6 +748,7 @@ jobs:
                   print(f"Patched: minSdk -> {req}")
               break
           PYEOF
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
@@ -733,6 +767,7 @@ jobs:
               if [ "${HAS_SDK_ERR:-0}" -gt 0 ]; then
                 echo "Detected SDK error, attempting auto-fix..."
                 fix_sdk "$BUILD_LOG"
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
@@ -752,6 +787,7 @@ jobs:
                 echo "Incompatibility terdeteksi, flutter pub upgrade..."
                 fvm flutter pub upgrade
                 fix_sdk "$BUILD_LOG" || true
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
@@ -770,6 +806,7 @@ jobs:
               if [ "${HAS_SDK_ERR2:-0}" -gt 0 ]; then
                 echo "SDK error catch-all setelah upgrade..."
                 fix_sdk "$BUILD_LOG" || true
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
@@ -790,6 +827,7 @@ jobs:
                 echo "org.gradle.configureondemand=false" >> android/gradle.properties
                 sed -i '/org.gradle.jvmargs/d' android/gradle.properties
                 echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=3g -XX:+UseG1GC" >> android/gradle.properties
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
@@ -841,6 +879,7 @@ jobs:
           KOTLIN_PYEOF
 
                 fvm flutter pub get 2>/dev/null || true
+                refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
                 BUILD_EXIT=${PIPESTATUS[0]}
