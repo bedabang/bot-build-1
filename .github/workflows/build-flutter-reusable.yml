@@ -371,6 +371,11 @@ jobs:
 
           overrides_to_add = {
               'permission_handler_android': '"<13.0.0"',
+              'win32': '6.4.0',
+              'win32_registry': '3.0.3',
+              'dartssh2': '2.22.5',
+              'flutter_secure_storage': '10.3.1',
+              'file_picker': '8.1.7',
           }
 
           if 'dependency_overrides:' not in content:
@@ -396,7 +401,7 @@ jobs:
           with open(pubspec_path, 'w') as f:
               f.write(content)
 
-          print("Pinned permission_handler_android to <13.0.0")
+          print("Pinned overrides: permission_handler_android, win32, win32_registry, dartssh2, flutter_secure_storage, file_picker")
           PYEOF
           }
 
@@ -662,12 +667,19 @@ jobs:
 
             cd "$PROJECT_ROOT"
 
+            if [ ! -f pubspec.yaml.orig_backup ]; then
+              cp pubspec.yaml pubspec.yaml.orig_backup
+            fi
+            cp pubspec.yaml.orig_backup pubspec.yaml
+
             fvm install $FLUTTER_VER 2>&1 | tail -5
             fvm use $FLUTTER_VER --force 2>&1 | tail -3
             fvm flutter --version
 
             fix_agp_kotlin "$FLUTTER_VER"
             patch_launcher_icons
+            pin_safe_overrides
+            APPLY_PH_OVERRIDE=true
             refresh_local_properties
 
             if [ "$ATTEMPT" -gt 1 ]; then
@@ -675,7 +687,13 @@ jobs:
               fvm flutter clean 2>/dev/null || true
             fi
 
-            FA_VERSIONS_TO_TRY="ORIGINAL 10.9.1 10.9.0 11.0.0"
+            FA_ORIGINAL_LINE=$(grep -oE '^\s*font_awesome_flutter\s*:.*$' pubspec.yaml || true)
+            if echo "$FA_ORIGINAL_LINE" | grep -qE '11\.[0-9]+\.[0-9]+|\^11|>=11'; then
+              echo "pubspec minta font_awesome_flutter 11.x, versi ini dilewati, langsung coba 10.7.0-10.9.1"
+              FA_VERSIONS_TO_TRY="10.7.0 10.8.0 10.9.0 10.9.1"
+            else
+              FA_VERSIONS_TO_TRY="ORIGINAL 10.7.0 10.8.0 10.9.0 10.9.1"
+            fi
 
             for FA_VER in $FA_VERSIONS_TO_TRY; do
               echo ""
