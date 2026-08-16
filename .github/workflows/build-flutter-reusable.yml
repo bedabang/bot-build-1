@@ -111,6 +111,8 @@ jobs:
                     "$ANDROID_HOME/platforms/android-37/package.xml" || true
                   sed -i 's|<codename>[^<]*</codename>|<codename></codename>|g' \
                     "$ANDROID_HOME/platforms/android-37/package.xml" || true
+                  sed -i -E 's/path="platforms;android-37[^"]*"/path="platforms;android-37"/g' \
+                    "$ANDROID_HOME/platforms/android-37/package.xml" || true
                   echo "package.xml diupdate untuk android-37"
                 fi
                 echo "Copy selesai: android-37 dari $VARIANT"
@@ -188,6 +190,8 @@ jobs:
             fi
           else
             echo "SDK 37 sudah tersedia"
+            sed -i -E 's/path="platforms;android-37[^"]*"/path="platforms;android-37"/g' \
+              "$ANDROID_HOME/platforms/android-37/package.xml" 2>/dev/null || true
           fi
 
           echo "=== SDK Platforms tersedia ==="
@@ -274,8 +278,8 @@ jobs:
           touch android/gradle.properties
           sed -i '/org.gradle.jvmargs/d' android/gradle.properties
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=2g -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError" >> android/gradle.properties
-          grep -q "org.gradle.daemon" android/gradle.properties || \
-            echo "org.gradle.daemon=true" >> android/gradle.properties
+          sed -i '/org.gradle.daemon/d' android/gradle.properties
+          echo "org.gradle.daemon=false" >> android/gradle.properties
 
       - name: Setup Initial Flutter and FVM
         uses: subosito/flutter-action@v2
@@ -428,13 +432,13 @@ jobs:
             [ -f "$SETTINGS_FILE" ] || return 0
 
             if [ "$FLUTTER_VER" = "3.47.0" ]; then
-              TARGET_AGP="8.7.0"
+              TARGET_AGP="8.9.1"
               TARGET_KOTLIN="2.0.21"
             elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
-              TARGET_AGP="8.3.2"
+              TARGET_AGP="8.9.1"
               TARGET_KOTLIN="1.9.25"
             else
-              TARGET_AGP="8.3.2"
+              TARGET_AGP="8.9.1"
               TARGET_KOTLIN="1.9.22"
             fi
 
@@ -506,6 +510,8 @@ jobs:
 
             if [ -d "$ANDROID_SDK_DIR/platforms/android-$TARGET" ]; then
               echo "SDK $TARGET sudah ada di $ANDROID_SDK_DIR, hanya patch compileSdk"
+              sed -i -E "s/path=\"platforms;android-$TARGET[^\"]*\"/path=\"platforms;android-$TARGET\"/g" \
+                "$ANDROID_SDK_DIR/platforms/android-$TARGET/package.xml" 2>/dev/null || true
               patch_compile_sdk "$TARGET"
               return 0
             fi
@@ -669,7 +675,7 @@ jobs:
               fvm flutter clean 2>/dev/null || true
             fi
 
-            FA_VERSIONS_TO_TRY="ORIGINAL 10.9.0 10.9.1 11.0.0"
+            FA_VERSIONS_TO_TRY="ORIGINAL 10.9.1 10.9.0 11.0.0"
 
             for FA_VER in $FA_VERSIONS_TO_TRY; do
               echo ""
