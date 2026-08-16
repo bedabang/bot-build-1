@@ -294,6 +294,268 @@ jobs:
           export PATH="$PATH:$HOME/.pub-cache/bin"
           fvm releases
 
+      - name: Write Build Helper Script
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          cat > pyhelper.py << 'HELPEREOF'
+          import re, sys, os
+
+          def pin_fa(fa_ver):
+              pubspec_path = "pubspec.yaml"
+              if not os.path.exists(pubspec_path):
+                  return
+              with open(pubspec_path) as f:
+                  content = f.read()
+              pattern = re.compile(r'^(\s*font_awesome_flutter\s*:\s*).*$', re.M)
+              if pattern.search(content):
+                  content = pattern.sub(lambda m: m.group(1) + '"^' + fa_ver + '"', content, count=1)
+              else:
+                  content = re.sub(
+                      r'(dependencies:\s*\n)',
+                      r'\1  font_awesome_flutter: "^' + fa_ver + '"\n',
+                      content,
+                      count=1
+                  )
+              with open(pubspec_path, 'w') as f:
+                  f.write(content)
+              print(f"Pinned font_awesome_flutter to ^{fa_ver}")
+
+          def pin_overrides():
+              pubspec_path = "pubspec.yaml"
+              if not os.path.exists(pubspec_path):
+                  return
+              with open(pubspec_path) as f:
+                  content = f.read()
+              overrides_to_add = {
+                  'permission_handler_android': '"<13.0.0"',
+                  'win32': '6.4.0',
+                  'win32_registry': '3.0.3',
+                  'dartssh2': '2.22.5',
+                  'flutter_secure_storage': '10.3.1',
+                  'file_picker': '8.1.7',
+              }
+              if 'dependency_overrides:' not in content:
+                  entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
+                  content = content.rstrip() + '\n\ndependency_overrides:\n' + entries
+              else:
+                  for pkg, ver in overrides_to_add.items():
+                      if re.search(rf'^\s+{re.escape(pkg)}\s*:', content, re.M):
+                          content = re.sub(
+                              rf'(^\s*{re.escape(pkg)}\s*:\s*).*$',
+                              rf'\1{ver}',
+                              content,
+                              count=1,
+                              flags=re.M
+                          )
+                      else:
+                          content = re.sub(
+                              r'(dependency_overrides:\s*\n)',
+                              f'\\1  {pkg}: {ver}\n',
+                              content
+                          )
+              with open(pubspec_path, 'w') as f:
+                  f.write(content)
+              print("Pinned overrides: permission_handler_android, win32, win32_registry, dartssh2, flutter_secure_storage, file_picker")
+
+          def patch_launcher_icons():
+              pubspec_path = "pubspec.yaml"
+              if not os.path.exists(pubspec_path):
+                  return
+              with open(pubspec_path) as f:
+                  content = f.read()
+              new_content = re.sub(
+                  r'(flutter_launcher_icons\s*:\s*)["\^]*0\.13\.[0-9]+["]*',
+                  r'\g<1>"^0.14.0"',
+                  content
+              )
+              if new_content != content:
+                  with open(pubspec_path, 'w') as f:
+                      f.write(new_content)
+                  print("Patched flutter_launcher_icons to ^0.14.0")
+              else:
+                  print("flutter_launcher_icons tidak perlu patch atau tidak ditemukan")
+
+          def patch_settings(settings_file, agp_ver, kotlin_ver):
+              if not os.path.exists(settings_file):
+                  return
+              with open(settings_file) as f:
+                  content = f.read()
+              content = re.sub(
+                  r'(id\("com\.android\.application"\)\s+version\s+")[^"]+(")',
+                  lambda m: m.group(1) + agp_ver + m.group(2),
+                  content
+              )
+              content = re.sub(
+                  r'(id\("org\.jetbrains\.kotlin\.android"\)\s+version\s+")[^"]+(")',
+                  lambda m: m.group(1) + kotlin_ver + m.group(2),
+                  content
+              )
+              with open(settings_file, 'w') as f:
+                  f.write(content)
+              print(f"Patched settings.gradle.kts: AGP -> {agp_ver}, Kotlin -> {kotlin_ver}")
+
+          def patch_compile_sdk(gradle_file, new_sdk):
+              if not os.path.exists(gradle_file):
+                  return
+              with open(gradle_file) as f:
+                  content = f.read()
+              m = re.search(r'compileSdk(?:Version)?\s*(?:=\s*)?(\d+)', content)
+              if m:
+                  old = m.group(1)
+                  if int(new_sdk) > int(old):
+                      p = re.sub(r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
+                                 lambda x: x.group(1) + new_sdk, content)
+                      p = re.sub(r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
+                                 lambda x: x.group(1) + new_sdk, p)
+                      with open(gradle_file, 'w') as f:
+                          f.write(p)
+                      print(f"Patched {gradle_file}: compileSdk/targetSdk {old} -> {new_sdk}")
+                  else:
+                      print(f"compileSdk {old} sudah >= {new_sdk}, skip")
+
+          def patch_minsdk(req):
+              for path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
+                  if not os.path.exists(path):
+                      continue
+                  with open(path) as f:
+                      content = f.read()
+                  nc = re.sub(r'(minSdk(?:Version)?\s*=?\s*)(flutter\.minSdkVersion|\d+)',
+                              lambda m: m.group(1) + req, content)
+                  if nc != content:
+                      with open(path, 'w') as f:
+                          f.write(nc)
+                      print(f"Patched: minSdk -> {req}")
+                  break
+
+          def downgrade_packages(target_sdk, max_avail, pub_cache, project):
+              target_sdk = int(target_sdk)
+              max_avail = int(max_avail)
+
+              hosted = os.path.join(pub_cache, 'hosted', 'pub.dev')
+              if not os.path.isdir(hosted):
+                  print("pub-cache tidak ditemukan, skip")
+                  return
+
+              def ver_tuple(v):
+                  try:
+                      return tuple(int(p) for p in re.split(r'[.+]', v)[:3])
+                  except Exception:
+                      return (0, 0, 0)
+
+              bad_pkgs = set()
+              for d in os.listdir(hosted):
+                  pkg_dir = os.path.join(hosted, d)
+                  for grad in ('android/build.gradle', 'android/build.gradle.kts'):
+                      fpath = os.path.join(pkg_dir, grad)
+                      if not os.path.exists(fpath):
+                          continue
+                      content = open(fpath).read()
+                      sdks = re.findall(r'compileSdk\w*\s*(?:=\s*)?(\d+)', content)
+                      if any(int(s) >= target_sdk for s in sdks):
+                          pkg_name = re.sub(r'-[\d][.\d+]*$', '', d)
+                          bad_pkgs.add(pkg_name)
+                      break
+
+              if not bad_pkgs:
+                  print(f"Tidak ada package di pub-cache yang butuh SDK >= {target_sdk}")
+                  return
+
+              print(f"Packages butuh SDK >= {target_sdk}: {bad_pkgs}")
+
+              parent_data = {}
+              for d in os.listdir(hosted):
+                  pkg_name = re.sub(r'-[\d][.\d+]*$', '', d)
+                  if pkg_name in bad_pkgs:
+                      continue
+                  pubspec_path = os.path.join(hosted, d, 'pubspec.yaml')
+                  if not os.path.exists(pubspec_path):
+                      continue
+                  content = open(pubspec_path).read()
+                  depends_on_bad = any(
+                      re.search(rf'^\s+{re.escape(bp)}\s*:', content, re.M)
+                      for bp in bad_pkgs
+                  )
+                  ver_m = re.search(r'^version:\s*([^\s]+)', content, re.M)
+                  ver = ver_m.group(1).strip() if ver_m else '0.0.0'
+
+                  if pkg_name not in parent_data:
+                      parent_data[pkg_name] = {'bad': [], 'safe': []}
+                  if depends_on_bad:
+                      parent_data[pkg_name]['bad'].append(ver)
+                  else:
+                      parent_data[pkg_name]['safe'].append(ver)
+
+              overrides = {}
+              pubspec_path = os.path.join(project, 'pubspec.yaml')
+              user_deps = set()
+              if os.path.exists(pubspec_path):
+                  uc = open(pubspec_path).read()
+                  for bp in bad_pkgs:
+                      if re.search(rf'^\s+{re.escape(bp)}\s*:', uc, re.M):
+                          user_deps.add(bp)
+
+              to_check = user_deps | set(parent_data.keys())
+              for pkg in to_check:
+                  data = parent_data.get(pkg, {'bad': [], 'safe': []})
+                  if not data['bad'] and pkg not in bad_pkgs:
+                      continue
+                  if data['safe']:
+                      best = max(data['safe'], key=ver_tuple)
+                      overrides[pkg] = best
+                  else:
+                      all_bad = data['bad']
+                      if all_bad:
+                          lowest_bad = min(all_bad, key=ver_tuple)
+                          overrides[pkg] = f'"<{lowest_bad}"'
+
+              if not overrides:
+                  print("Tidak ada override yang bisa diterapkan")
+                  return
+
+              print(f"Dependency overrides: {overrides}")
+
+              if not os.path.exists(pubspec_path):
+                  return
+
+              with open(pubspec_path) as f:
+                  uc = f.read()
+
+              new_entries = ''.join(f'  {pkg}: {ver}\n' for pkg, ver in overrides.items())
+              if 'dependency_overrides:' not in uc:
+                  uc = uc.rstrip() + '\n\ndependency_overrides:\n' + new_entries
+              else:
+                  for pkg, ver in overrides.items():
+                      if not re.search(rf'^\s+{re.escape(pkg)}\s*:', uc, re.M):
+                          uc = re.sub(r'(dependency_overrides:\s*\n)',
+                                      f'\\1  {pkg}: {ver}\n', uc)
+
+              with open(pubspec_path, 'w') as f:
+                  f.write(uc)
+
+              print(f"pubspec.yaml diupdate dengan {len(overrides)} dependency_overrides")
+
+          if __name__ == "__main__":
+              cmd = sys.argv[1]
+              args = sys.argv[2:]
+              if cmd == "pin_fa":
+                  pin_fa(*args)
+              elif cmd == "pin_overrides":
+                  pin_overrides()
+              elif cmd == "patch_launcher_icons":
+                  patch_launcher_icons()
+              elif cmd == "patch_settings":
+                  patch_settings(*args)
+              elif cmd == "patch_compile_sdk":
+                  patch_compile_sdk(*args)
+              elif cmd == "patch_minsdk":
+                  patch_minsdk(*args)
+              elif cmd == "downgrade_packages":
+                  downgrade_packages(*args)
+
+          HELPEREOF
+          echo "pyhelper.py ditulis"
+
+
       - name: Build with Flutter Version Pool Retry
         id: build_retry
         timeout-minutes: 25
@@ -328,107 +590,15 @@ jobs:
 
           pin_fa_version() {
             local FA_VER="$1"
-            python3 - "$FA_VER" <<'PYEOF'
-          import re, sys, os
-
-          fa_ver = sys.argv[1]
-          pubspec_path = "pubspec.yaml"
-          if not os.path.exists(pubspec_path):
-              sys.exit(0)
-
-          with open(pubspec_path) as f:
-              content = f.read()
-
-          pattern = re.compile(r'^(\s*font_awesome_flutter\s*:\s*).*$', re.M)
-
-          if pattern.search(content):
-              content = pattern.sub(lambda m: m.group(1) + '"^' + fa_ver + '"', content, count=1)
-          else:
-              content = re.sub(
-                  r'(dependencies:\s*\n)',
-                  r'\1  font_awesome_flutter: "^' + fa_ver + '"\n',
-                  content,
-                  count=1
-              )
-
-          with open(pubspec_path, 'w') as f:
-              f.write(content)
-
-          print(f"Pinned font_awesome_flutter to ^{fa_ver}")
-          PYEOF
+            python3 pyhelper.py pin_fa "$FA_VER"
           }
 
           pin_safe_overrides() {
-            python3 <<'PYEOF'
-          import re, os
-
-          pubspec_path = "pubspec.yaml"
-          if not os.path.exists(pubspec_path):
-              exit(0)
-
-          with open(pubspec_path) as f:
-              content = f.read()
-
-          overrides_to_add = {
-              'permission_handler_android': '"<13.0.0"',
-              'win32': '6.4.0',
-              'win32_registry': '3.0.3',
-              'dartssh2': '2.22.5',
-              'flutter_secure_storage': '10.3.1',
-              'file_picker': '8.1.7',
-          }
-
-          if 'dependency_overrides:' not in content:
-              entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
-              content = content.rstrip() + '\n\ndependency_overrides:\n' + entries
-          else:
-              for pkg, ver in overrides_to_add.items():
-                  if re.search(rf'^\s+{re.escape(pkg)}\s*:', content, re.M):
-                      content = re.sub(
-                          rf'(^\s*{re.escape(pkg)}\s*:\s*).*$',
-                          rf'\1{ver}',
-                          content,
-                          count=1,
-                          flags=re.M
-                      )
-                  else:
-                      content = re.sub(
-                          r'(dependency_overrides:\s*\n)',
-                          f'\\1  {pkg}: {ver}\n',
-                          content
-                      )
-
-          with open(pubspec_path, 'w') as f:
-              f.write(content)
-
-          print("Pinned overrides: permission_handler_android, win32, win32_registry, dartssh2, flutter_secure_storage, file_picker")
-          PYEOF
+            python3 pyhelper.py pin_overrides
           }
 
           patch_launcher_icons() {
-            python3 <<'PYEOF'
-          import re, os
-
-          pubspec_path = "pubspec.yaml"
-          if not os.path.exists(pubspec_path):
-              exit(0)
-
-          with open(pubspec_path) as f:
-              content = f.read()
-
-          new_content = re.sub(
-              r'(flutter_launcher_icons\s*:\s*)["\^]*0\.13\.[0-9]+["]*',
-              r'\g<1>"^0.14.0"',
-              content
-          )
-
-          if new_content != content:
-              with open(pubspec_path, 'w') as f:
-                  f.write(new_content)
-              print("Patched flutter_launcher_icons to ^0.14.0")
-          else:
-              print("flutter_launcher_icons tidak perlu patch atau tidak ditemukan")
-          PYEOF
+            python3 pyhelper.py patch_launcher_icons
           }
 
           fix_agp_kotlin() {
@@ -447,50 +617,14 @@ jobs:
               TARGET_KOTLIN="1.9.22"
             fi
 
-            python3 - "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN" <<'SETTINGS_PYEOF'
-          import re, sys
-          settings_file, agp_ver, kotlin_ver = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(settings_file) as f:
-              content = f.read()
-          content = re.sub(
-              r'(id\("com\.android\.application"\)\s+version\s+")[^"]+(")',
-              lambda m: m.group(1) + agp_ver + m.group(2),
-              content
-          )
-          content = re.sub(
-              r'(id\("org\.jetbrains\.kotlin\.android"\)\s+version\s+")[^"]+(")',
-              lambda m: m.group(1) + kotlin_ver + m.group(2),
-              content
-          )
-          with open(settings_file, 'w') as f:
-              f.write(content)
-          print(f"Patched settings.gradle.kts: AGP -> {agp_ver}, Kotlin -> {kotlin_ver}")
-          SETTINGS_PYEOF
+            python3 pyhelper.py patch_settings "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN"
           }
 
           patch_compile_sdk() {
             local NEW_SDK="$1"
             for path in "android/app/build.gradle.kts" "android/app/build.gradle"; do
               [ -f "$path" ] || continue
-              python3 - "$path" "$NEW_SDK" <<'PYEOF'
-          import re, sys
-          gradle_file, new_sdk = sys.argv[1], sys.argv[2]
-          with open(gradle_file) as f:
-              content = f.read()
-          m = re.search(r'compileSdk(?:Version)?\s*(?:=\s*)?(\d+)', content)
-          if m:
-              old = m.group(1)
-              if int(new_sdk) > int(old):
-                  p = re.sub(r'(compileSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
-                             lambda x: x.group(1) + new_sdk, content)
-                  p = re.sub(r'(targetSdk(?:Version)?\s*(?:=\s*)?)' + re.escape(old),
-                             lambda x: x.group(1) + new_sdk, p)
-                  with open(gradle_file, 'w') as f:
-                      f.write(p)
-                  print(f"Patched {gradle_file}: compileSdk/targetSdk {old} -> {new_sdk}")
-              else:
-                  print(f"compileSdk {old} sudah >= {new_sdk}, skip")
-          PYEOF
+              python3 pyhelper.py patch_compile_sdk "$path" "$NEW_SDK"
               break
             done
           }
@@ -540,123 +674,11 @@ jobs:
               | grep -oE 'android-[0-9]+$' | grep -oE '[0-9]+' | sort -n | tail -1 || echo "36")
             echo "Max SDK tersedia: $MAX_AVAIL"
 
-            python3 - "$TARGET" "$MAX_AVAIL" "${PUB_CACHE:-$HOME/.pub-cache}" "$(pwd)" <<'DOWNGRADE_PYEOF'
-          import sys, os, re
-
-          target_sdk = int(sys.argv[1])
-          max_avail  = int(sys.argv[2])
-          pub_cache  = sys.argv[3]
-          project    = sys.argv[4]
-
-          hosted = os.path.join(pub_cache, 'hosted', 'pub.dev')
-          if not os.path.isdir(hosted):
-              print("pub-cache tidak ditemukan, skip")
-              sys.exit(0)
-
-          def ver_tuple(v):
-              try:
-                  return tuple(int(p) for p in re.split(r'[.+]', v)[:3])
-              except:
-                  return (0, 0, 0)
-
-          bad_pkgs = set()
-          for d in os.listdir(hosted):
-              pkg_dir = os.path.join(hosted, d)
-              for grad in ('android/build.gradle', 'android/build.gradle.kts'):
-                  fpath = os.path.join(pkg_dir, grad)
-                  if not os.path.exists(fpath):
-                      continue
-                  content = open(fpath).read()
-                  sdks = re.findall(r'compileSdk\w*\s*(?:=\s*)?(\d+)', content)
-                  if any(int(s) >= target_sdk for s in sdks):
-                      pkg_name = re.sub(r'-[\d][.\d+]*$', '', d)
-                      bad_pkgs.add(pkg_name)
-                  break
-
-          if not bad_pkgs:
-              print(f"Tidak ada package di pub-cache yang butuh SDK >= {target_sdk}")
-              sys.exit(0)
-
-          print(f"Packages butuh SDK >= {target_sdk}: {bad_pkgs}")
-
-          parent_data = {}
-          for d in os.listdir(hosted):
-              pkg_name = re.sub(r'-[\d][.\d+]*$', '', d)
-              if pkg_name in bad_pkgs:
-                  continue
-              pubspec_path = os.path.join(hosted, d, 'pubspec.yaml')
-              if not os.path.exists(pubspec_path):
-                  continue
-              content = open(pubspec_path).read()
-              depends_on_bad = any(
-                  re.search(rf'^\s+{re.escape(bp)}\s*:', content, re.M)
-                  for bp in bad_pkgs
-              )
-              ver_m = re.search(r'^version:\s*([^\s]+)', content, re.M)
-              ver = ver_m.group(1).strip() if ver_m else '0.0.0'
-
-              if pkg_name not in parent_data:
-                  parent_data[pkg_name] = {'bad': [], 'safe': []}
-              if depends_on_bad:
-                  parent_data[pkg_name]['bad'].append(ver)
-              else:
-                  parent_data[pkg_name]['safe'].append(ver)
-
-          overrides = {}
-          pubspec_path = os.path.join(project, 'pubspec.yaml')
-          user_deps = set()
-          if os.path.exists(pubspec_path):
-              uc = open(pubspec_path).read()
-              for bp in bad_pkgs:
-                  if re.search(rf'^\s+{re.escape(bp)}\s*:', uc, re.M):
-                      user_deps.add(bp)
-
-          to_check = user_deps | set(parent_data.keys())
-          for pkg in to_check:
-              data = parent_data.get(pkg, {'bad': [], 'safe': []})
-              if not data['bad'] and pkg not in bad_pkgs:
-                  continue
-              if data['safe']:
-                  best = max(data['safe'], key=ver_tuple)
-                  overrides[pkg] = best
-              else:
-                  all_bad = data['bad']
-                  if all_bad:
-                      lowest_bad = min(all_bad, key=ver_tuple)
-                      overrides[pkg] = f'"<{lowest_bad}"'
-
-          if not overrides:
-              print("Tidak ada override yang bisa diterapkan")
-              sys.exit(0)
-
-          print(f"Dependency overrides: {overrides}")
-
-          if not os.path.exists(pubspec_path):
-              sys.exit(0)
-
-          with open(pubspec_path) as f:
-              uc = f.read()
-
-          new_entries = ''.join(f'  {pkg}: {ver}\n' for pkg, ver in overrides.items())
-          if 'dependency_overrides:' not in uc:
-              uc = uc.rstrip() + '\n\ndependency_overrides:\n' + new_entries
-          else:
-              for pkg, ver in overrides.items():
-                  if not re.search(rf'^\s+{re.escape(pkg)}\s*:', uc, re.M):
-                      uc = re.sub(r'(dependency_overrides:\s*\n)',
-                                  f'\\1  {pkg}: {ver}\n', uc)
-
-          with open(pubspec_path, 'w') as f:
-              f.write(uc)
-
-          print(f"pubspec.yaml diupdate dengan {len(overrides)} dependency_overrides")
-          DOWNGRADE_PYEOF
+            python3 pyhelper.py downgrade_packages "$TARGET" "$MAX_AVAIL" "${PUB_CACHE:-$HOME/.pub-cache}" "$(pwd)"
 
             fvm flutter pub get || true
             return 0
           }
-
-          for FLUTTER_VER in $CANDIDATES; do
             ATTEMPT=$((ATTEMPT + 1))
             TOTAL=$(echo $CANDIDATES | wc -w)
 
@@ -759,19 +781,7 @@ jobs:
                 | grep -oE "[0-9]+" | head -1)
               if [ -n "$REQ_MIN" ]; then
                 echo "Auto-patch minSdk -> $REQ_MIN"
-                python3 - "$REQ_MIN" <<'PYEOF'
-          import re, os, sys
-          req = sys.argv[1]
-          for path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
-              if not os.path.exists(path): continue
-              with open(path) as f: content = f.read()
-              nc = re.sub(r'(minSdk(?:Version)?\s*=?\s*)(flutter\.minSdkVersion|\d+)',
-                          lambda m: m.group(1) + req, content)
-              if nc != content:
-                  with open(path, 'w') as f: f.write(nc)
-                  print(f"Patched: minSdk -> {req}")
-              break
-          PYEOF
+                python3 pyhelper.py patch_minsdk "$REQ_MIN"
                 refresh_local_properties
                 fvm flutter build apk --release --no-tree-shake-icons \
                   --android-skip-build-dependency-validation 2>&1 | tee "$BUILD_LOG"
@@ -869,38 +879,7 @@ jobs:
                 "$BUILD_LOG" 2>/dev/null || true)
               if [ "${KOTLIN_ERR:-0}" -gt 0 ]; then
                 echo "Kotlin incompatibility terdeteksi, injecting dependency_overrides..."
-                python3 - "$(pwd)" <<'KOTLIN_PYEOF'
-          import re, sys, os
-
-          project = sys.argv[1]
-          pubspec_path = os.path.join(project, 'pubspec.yaml')
-          if not os.path.exists(pubspec_path):
-              sys.exit(0)
-
-          with open(pubspec_path) as f:
-              content = f.read()
-
-          overrides_to_add = {
-              'permission_handler_android': '"<13.0.0"',
-          }
-
-          if 'dependency_overrides:' not in content:
-              entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
-              content = content.rstrip() + '\n\ndependency_overrides:\n' + entries
-          else:
-              for pkg, ver in overrides_to_add.items():
-                  if not re.search(rf'^\s+{re.escape(pkg)}\s*:', content, re.M):
-                      content = re.sub(
-                          r'(dependency_overrides:\s*\n)',
-                          f'\\1  {pkg}: {ver}\n',
-                          content
-                      )
-
-          with open(pubspec_path, 'w') as f:
-              f.write(content)
-
-          print(f"Injected dependency_overrides: {list(overrides_to_add.keys())}")
-          KOTLIN_PYEOF
+                pin_safe_overrides
 
                 fvm flutter pub get 2>/dev/null || true
                 refresh_local_properties
