@@ -679,6 +679,8 @@ jobs:
             fvm flutter pub get || true
             return 0
           }
+
+          for FLUTTER_VER in $CANDIDATES; do
             ATTEMPT=$((ATTEMPT + 1))
             TOTAL=$(echo $CANDIDATES | wc -w)
 
