@@ -328,10 +328,10 @@ jobs:
                   content = f.read()
               overrides_to_add = {
                   'permission_handler_android': '"<13.0.0"',
-                  'win32': '6.4.0',
-                  'win32_registry': '3.0.3',
-                  'dartssh2': '2.22.5',
-                  'flutter_secure_storage': '10.3.1',
+                  'win32': '">=5.5.0 <6.0.0"',
+                  'win32_registry': '">=2.0.0 <3.0.0"',
+                  'dartssh2': '">=2.10.0 <3.0.0"',
+                  'flutter_secure_storage': '">=9.0.0 <11.0.0"',
                   'file_picker': '8.1.7',
               }
               if 'dependency_overrides:' not in content:
