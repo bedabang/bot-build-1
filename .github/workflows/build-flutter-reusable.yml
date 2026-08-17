@@ -615,10 +615,10 @@ jobs:
               TARGET_KOTLIN="2.0.21"
             elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
               TARGET_AGP="8.9.1"
-              TARGET_KOTLIN="1.9.25"
+              TARGET_KOTLIN="2.0.21"
             else
               TARGET_AGP="8.9.1"
-              TARGET_KOTLIN="1.9.22"
+              TARGET_KOTLIN="2.0.21"
             fi
 
             python3 pyhelper.py patch_settings "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN"
@@ -884,7 +884,8 @@ jobs:
               KOTLIN_ERR=$(grep -cE "Unresolved reference.*compilerOptions|kotlin\s*\{.*Unresolved|compilerOptions.*Unresolved|kgpVersion|KgpUtils|incompatible version of Kotlin|metadata version" \
                 "$BUILD_LOG" 2>/dev/null || true)
               if [ "${KOTLIN_ERR:-0}" -gt 0 ]; then
-                echo "Kotlin incompatibility terdeteksi, injecting dependency_overrides..."
+                echo "Kotlin incompatibility terdeteksi, naikin Kotlin plugin ke versi lebih baru..."
+                python3 pyhelper.py patch_settings "android/settings.gradle.kts" "8.9.1" "2.1.0"
                 pin_safe_overrides
 
                 fvm flutter pub get 2>/dev/null || true
