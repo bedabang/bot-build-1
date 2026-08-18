@@ -67,6 +67,7 @@ jobs:
             cd "$TARGET_DIR"
             rm -rf build .dart_tool android/.gradle android/build android/app/build ios/Pods ios/.symlinks
             find . -iname "local.properties" -delete
+            find . -iname "pubspec.lock" -delete
           else
             echo "Error: Direktori $TARGET_DIR tidak ditemukan."
             exit 1
@@ -730,6 +731,7 @@ jobs:
               cp pubspec.yaml pubspec.yaml.orig_backup
             fi
             cp pubspec.yaml.orig_backup pubspec.yaml
+            rm -f pubspec.lock
 
             fvm install $FLUTTER_VER 2>&1 | tail -5
             fvm use $FLUTTER_VER --force 2>&1 | tail -3
