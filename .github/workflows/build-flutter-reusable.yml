@@ -253,6 +253,13 @@ jobs:
 
           min_sdk = os.environ.get('MIN_SDK', '3.8')
 
+          def sdk_key(s):
+              try:
+                  parts = [int(p) for p in s.split('.')[:2]]
+                  return (parts[0], parts[1] if len(parts) > 1 else 0)
+              except Exception:
+                  return (3, 8)
+
           compat_map = {
               "3.8": ["3.32.0", "3.32.5", "3.35.0", "3.38.0"],
               "3.9": ["3.32.5", "3.35.0", "3.38.0"],
@@ -262,7 +269,12 @@ jobs:
               "3.13": ["3.47.0"],
           }
 
-          candidates = compat_map.get(min_sdk, ["3.47.0"])
+          if min_sdk in compat_map:
+              candidates = compat_map[min_sdk]
+          elif sdk_key(min_sdk) < (3, 8):
+              candidates = ["3.32.0", "3.32.5", "3.35.0", "3.38.0", "3.47.0"]
+          else:
+              candidates = ["3.47.0"]
           print(" ".join(candidates))
           PYEOF
           )
@@ -348,14 +360,14 @@ jobs:
                       'permission_handler_android': '"<13.0.0"',
                       'win32': '"<7.0.0"',
                       'file_picker': '8.1.7',
-                      'dartssh2': '">=2.9.0 <3.0.0"',
+                      'dartssh2': '">=2.9.0"',
                   }
               else:
                   overrides_to_add = {
                       'permission_handler_android': '"<13.0.0"',
                       'win32': '">=5.5.0 <6.0.0"',
                       'file_picker': '8.1.7',
-                      'dartssh2': '">=2.9.0 <3.0.0"',
+                      'dartssh2': '">=2.9.0"',
                   }
               if 'dependency_overrides:' not in content:
                   entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
