@@ -73,6 +73,22 @@ jobs:
             exit 1
           fi
 
+      - name: Remove Duplicate Android Icons
+        run: |
+          ANDROID_RES="${{ env.PROJECT_ROOT }}/android/app/src/main/res"
+          if [ -d "$ANDROID_RES" ]; then
+            find "$ANDROID_RES/mipmap-"* -type f \( -name "*.jpg" -o -name "*.jpeg" \) 2>/dev/null | while read jpg_file; do
+              png_file="${jpg_file%.*}.png"
+              if [ -f "$png_file" ]; then
+                echo "Removing duplicate JPG: $jpg_file (PNG exists)"
+                rm -f "$jpg_file"
+              fi
+            done
+            echo "✅ Duplicate icon cleanup complete"
+          else
+            echo "Android resources directory not found, skipping cleanup"
+          fi
+      
       - name: Fix Android SDK Path
         run: |
           echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
