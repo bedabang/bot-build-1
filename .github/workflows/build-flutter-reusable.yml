@@ -360,6 +360,7 @@ jobs:
                       'win32': '"<7.0.0"',
                       'file_picker': '8.1.7',
                       'dartssh2': '">=2.9.0"',
+                      'dynamic_color': '"<1.9.0"',
                   }
               else:
                   overrides_to_add = {
@@ -368,6 +369,7 @@ jobs:
                       'file_picker': '8.1.7',
                       'dartssh2': '">=2.9.0"',
                       'open_file': '"<4.0.0"',
+                      'dynamic_color': '"<1.9.0"',
                   }
               if 'dependency_overrides:' not in content:
                   entries = ''.join(f'  {k}: {v}\n' for k, v in overrides_to_add.items())
