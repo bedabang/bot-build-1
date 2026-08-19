@@ -429,6 +429,20 @@ jobs:
                   f.write(content)
               print(f"Patched settings.gradle.kts: AGP -> {agp_ver}, Kotlin -> {kotlin_ver}")
 
+          def patch_agp_only(settings_file, agp_ver):
+              if not os.path.exists(settings_file):
+                  return
+              with open(settings_file) as f:
+                  content = f.read()
+              content = re.sub(
+                  r'(id\("com\.android\.application"\)\s+version\s+")[^"]+(")',
+                  lambda m: m.group(1) + agp_ver + m.group(2),
+                  content
+              )
+              with open(settings_file, 'w') as f:
+                  f.write(content)
+              print(f"Patched settings.gradle.kts: AGP -> {agp_ver} (Kotlin dibiarkan pakai built-in Flutter)")
+
           def patch_compile_sdk(gradle_file, new_sdk):
               if not os.path.exists(gradle_file):
                   return
@@ -580,6 +594,8 @@ jobs:
                   patch_launcher_icons()
               elif cmd == "patch_settings":
                   patch_settings(*args)
+              elif cmd == "patch_agp_only":
+                  patch_agp_only(*args)
               elif cmd == "patch_compile_sdk":
                   patch_compile_sdk(*args)
               elif cmd == "patch_minsdk":
@@ -643,7 +659,8 @@ jobs:
 
             if [ "$FLUTTER_VER" = "3.47.0" ]; then
               TARGET_AGP="8.9.1"
-              TARGET_KOTLIN="2.0.21"
+              python3 pyhelper.py patch_agp_only "$SETTINGS_FILE" "$TARGET_AGP"
+              return 0
             elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
               TARGET_AGP="8.9.1"
               TARGET_KOTLIN="2.0.21"
@@ -910,8 +927,12 @@ jobs:
               KOTLIN_ERR=$(grep -cE "Unresolved reference.*compilerOptions|kotlin\s*\{.*Unresolved|compilerOptions.*Unresolved|kgpVersion|KgpUtils|incompatible version of Kotlin|metadata version" \
                 "$BUILD_LOG" 2>/dev/null || true)
               if [ "${KOTLIN_ERR:-0}" -gt 0 ]; then
-                echo "Kotlin incompatibility terdeteksi, naikin Kotlin plugin ke versi lebih baru..."
-                python3 pyhelper.py patch_settings "android/settings.gradle.kts" "8.9.1" "2.1.0"
+                echo "Kotlin incompatibility terdeteksi..."
+                if [ "$FLUTTER_VER" = "3.47.0" ]; then
+                  echo "Flutter 3.47.0 pakai built-in Kotlin, tidak forcing plugin Kotlin eksternal"
+                else
+                  python3 pyhelper.py patch_settings "android/settings.gradle.kts" "8.9.1" "2.1.0"
+                fi
                 pin_safe_overrides
 
                 fvm flutter pub get 2>/dev/null || true
