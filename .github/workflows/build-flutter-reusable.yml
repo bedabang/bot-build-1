@@ -94,6 +94,20 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
           echo "Isi local.properties:"
           cat "${{ env.PROJECT_ROOT }}/android/local.properties"
+          
+     - name: Normalize Gradle Kotlin DSL Syntax
+        run: |
+          GRADLE_KTS="${{ env.PROJECT_ROOT }}/android/app/build.gradle.kts"
+          if [ -f "$GRADLE_KTS" ]; then
+            sed -i -E 's/^([[:space:]]*)minSdkVersion[[:space:]]+(.+)$/\1minSdk = \2/' "$GRADLE_KTS"
+            sed -i -E 's/^([[:space:]]*)targetSdkVersion[[:space:]]+(.+)$/\1targetSdk = \2/' "$GRADLE_KTS"
+            sed -i -E 's/^([[:space:]]*)compileSdkVersion[[:space:]]+(.+)$/\1compileSdk = \2/' "$GRADLE_KTS"
+            sed -i -E 's/^([[:space:]]*)versionCode[[:space:]]+([^=].*)$/\1versionCode = \2/' "$GRADLE_KTS"
+            sed -i -E 's/^([[:space:]]*)versionName[[:space:]]+([^=].*)$/\1versionName = \2/' "$GRADLE_KTS"
+            sed -i -E 's/^([[:space:]]*)applicationId[[:space:]]+"([^"]+)"$/\1applicationId = "\2"/' "$GRADLE_KTS"
+            echo "=== build.gradle.kts after normalize ==="
+            cat "$GRADLE_KTS"
+          fi
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -322,25 +336,6 @@ jobs:
           dart pub global activate fvm
           export PATH="$PATH:$HOME/.pub-cache/bin"
           fvm releases
-
-      - name: Fix record_linux via dependency_overrides
-        run: |
-          cd "${{ env.PROJECT_ROOT }}"
-          python3 << 'EOF'
-          import re
-          with open('pubspec.yaml') as f:
-              content = f.read()
-          
-          if 'record_linux' not in content or 'dependency_overrides' not in content:
-              if 'dependency_overrides:' not in content:
-                  content = content.rstrip() + '\n\ndependency_overrides:\n  record_linux: "^1.0.0"\n'
-              else:
-                  content = re.sub(r'(dependency_overrides:\n)', r'\1  record_linux: "^1.0.0"\n', content)
-          
-          with open('pubspec.yaml', 'w') as f:
-              f.write(content)
-          print("✅ record_linux added to dependency_overrides")
-          EOF
 
       - name: Write Build Helper Script
         working-directory: ${{ env.PROJECT_ROOT }}
