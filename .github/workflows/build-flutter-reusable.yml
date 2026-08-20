@@ -91,6 +91,7 @@ jobs:
       
       - name: Fix Fake PNG Icons (actually JPEG)
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
           ANDROID_RES="${{ env.PROJECT_ROOT }}/android/app/src/main/res"
           if [ -d "$ANDROID_RES" ]; then
             find "$ANDROID_RES" -iname "*.png" | while read -r f; do
