@@ -323,6 +323,25 @@ jobs:
           export PATH="$PATH:$HOME/.pub-cache/bin"
           fvm releases
 
+      - name: Fix record_linux via dependency_overrides
+        run: |
+          cd "${{ env.PROJECT_ROOT }}"
+          python3 << 'EOF'
+          import re
+          with open('pubspec.yaml') as f:
+              content = f.read()
+          
+          if 'record_linux' not in content or 'dependency_overrides' not in content:
+              if 'dependency_overrides:' not in content:
+                  content = content.rstrip() + '\n\ndependency_overrides:\n  record_linux: "^1.0.0"\n'
+              else:
+                  content = re.sub(r'(dependency_overrides:\n)', r'\1  record_linux: "^1.0.0"\n', content)
+          
+          with open('pubspec.yaml', 'w') as f:
+              f.write(content)
+          print("✅ record_linux added to dependency_overrides")
+          EOF
+
       - name: Write Build Helper Script
         working-directory: ${{ env.PROJECT_ROOT }}
         run: |
