@@ -660,6 +660,15 @@ jobs:
           export PATH="$PATH:$HOME/.pub-cache/bin"
 
           refresh_local_properties() {
+            GRADLE_KTS_RT="android/app/build.gradle.kts"
+            if [ -f "$GRADLE_KTS_RT" ]; then
+              sed -i -E 's/^([[:space:]]*)minSdkVersion[[:space:]]+(.+)$/\1minSdk = \2/' "$GRADLE_KTS_RT"
+              sed -i -E 's/^([[:space:]]*)targetSdkVersion[[:space:]]+(.+)$/\1targetSdk = \2/' "$GRADLE_KTS_RT"
+              sed -i -E 's/^([[:space:]]*)compileSdkVersion[[:space:]]+(.+)$/\1compileSdk = \2/' "$GRADLE_KTS_RT"
+              sed -i -E 's/^([[:space:]]*)versionCode[[:space:]]+([^=].*)$/\1versionCode = \2/' "$GRADLE_KTS_RT"
+              sed -i -E 's/^([[:space:]]*)versionName[[:space:]]+([^=].*)$/\1versionName = \2/' "$GRADLE_KTS_RT"
+              sed -i -E 's/^([[:space:]]*)applicationId[[:space:]]+"([^"]+)"$/\1applicationId = "\2"/' "$GRADLE_KTS_RT"
+            fi
             echo "sdk.dir=$ANDROID_SDK_DIR" > android/local.properties
             FLUTTER_ROOT=$(fvm flutter --version --machine 2>/dev/null \
               | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('flutterRoot',''))" \
