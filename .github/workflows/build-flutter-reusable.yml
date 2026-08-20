@@ -89,6 +89,21 @@ jobs:
             echo "Android resources directory not found, skipping cleanup"
           fi
       
+      - name: Fix Fake PNG Icons (actually JPEG)
+        run: |
+          ANDROID_RES="${{ env.PROJECT_ROOT }}/android/app/src/main/res"
+          if [ -d "$ANDROID_RES" ]; then
+            find "$ANDROID_RES" -iname "*.png" | while read -r f; do
+              FTYPE=$(file -b "$f")
+              if echo "$FTYPE" | grep -qi "jpeg"; then
+                echo "Converting fake PNG (actually JPEG): $f"
+                convert "$f" "$f.real.png"
+                mv "$f.real.png" "$f"
+              fi
+            done
+            echo "✅ Icon format check complete"
+          fi
+      
       - name: Fix Android SDK Path
         run: |
           echo "sdk.dir=$ANDROID_HOME" > "${{ env.PROJECT_ROOT }}/android/local.properties"
