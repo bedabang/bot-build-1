@@ -724,7 +724,8 @@ jobs:
 
             if [ "$FLUTTER_VER" = "3.47.0" ]; then
               TARGET_AGP="8.9.1"
-              python3 pyhelper.py patch_agp_only "$SETTINGS_FILE" "$TARGET_AGP"
+              TARGET_KOTLIN="2.2.20"
+              python3 pyhelper.py patch_settings "$SETTINGS_FILE" "$TARGET_AGP" "$TARGET_KOTLIN"
               return 0
             elif [ "$FLUTTER_VER" = "3.38.0" ] || [ "$FLUTTER_VER" = "3.35.0" ]; then
               TARGET_AGP="8.9.1"
